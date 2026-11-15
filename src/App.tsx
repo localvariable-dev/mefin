@@ -77,12 +77,13 @@ function EmptyState({ icon: Icon, title, text, action }: { icon: typeof ReceiptT
 
 export default function App() {
   const [page, setPage] = useState<Page>('Overview')
-  const [workspaces,setWorkspaces] = useState<Workspace[]>([])
-  const [activeWorkspaceId,setActiveWorkspaceId] = useState('personal')
-  const [workspaceMenu,setWorkspaceMenu] = useState(false)
-  const [recurring,setRecurring] = useState<RecurringItem[]>([])
-  const [dismissedNoticeIds,setDismissedNoticeIds] = useState<string[]>([])
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([])
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState('personal')
+  const [workspaceMenu, setWorkspaceMenu] = useState(false)
+  const [recurring, setRecurring] = useState<RecurringItem[]>([])
+  const [dismissedNoticeIds, setDismissedNoticeIds] = useState<string[]>([])
   const [mobileOpen, setMobileOpen] = useState(false)
+  const [moreSheetOpen, setMoreSheetOpen] = useState(false)
   const [transactions, setTransactions] = useState<Tx[]>(seed)
   const [hydrated, setHydrated] = useState(false)
   const [modal, setModal] = useState(false)
@@ -92,24 +93,21 @@ export default function App() {
   const [filter, setFilter] = useState('All')
   const [range, setRange] = useState('This month')
   const [form, setForm] = useState({ title: '', amount: '', category: 'Food & groceries', account: 'Cash', date: localDateString(), type: 'expense' as 'income'|'expense' })
-  // Stored balances are opening balances; recorded transactions are applied when displaying them.
   const [accounts, setAccounts] = useState<StoredAccount[]>([{ name: 'HDFC Savings', type: 'Savings account', balance: 64250 }, { name: 'Cash', type: 'Cash', balance: 8500 }, { name: 'SBI Current', type: 'Current account', balance: 11500 }])
   const [budgetItems, setBudgetItems] = useState<StoredBudget[]>(budgets)
   const [goals, setGoals] = useState<StoredGoal[]>([{ name: 'Emergency fund', current: 18000, target: 50000, date: 'Mar 2027' }, { name: 'New laptop', current: 24000, target: 65000, date: 'Jun 2027' }])
-
   const [showDemo, setShowDemo] = useState(true)
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); document.querySelector<HTMLInputElement>('.search input')?.focus() }
-      if (event.key === 'Escape') { setModal(false); setMobileOpen(false) }
+      if (event.key === 'Escape') { setModal(false); setMobileOpen(false); setMoreSheetOpen(false) }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'n') { event.preventDefault(); openAdd() }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [accounts])
 
-  // Load the active local profile. Every profile owns a separate snapshot.
   useEffect(() => {
     let active = true
     const load = async () => {
@@ -222,12 +220,13 @@ export default function App() {
     }, 0)
     return { income, expense, net: income-expense, balance }
   }, [transactions, accounts, range])
+
   const filtered = transactions.filter(t => {
     const matches = (t.title + ' ' + t.category + ' ' + t.account).toLowerCase().includes(query.toLowerCase())
     return matches && (filter === 'All' || t.type === filter.toLowerCase())
   }).sort((a,b)=>b.date.localeCompare(a.date))
 
-  const go = (p: Page) => { setPage(p); setMobileOpen(false); setNotice('') }
+  const go = (p: Page) => { setPage(p); setMobileOpen(false); setMoreSheetOpen(false); setNotice('') }
   const openAdd = (tx?: Tx) => {
     setEditing(tx || null)
     setForm(tx ? { title: tx.title, amount: String(tx.amount), category: tx.category, account: tx.account, date: tx.date, type: tx.type } : { title:'', amount:'', category:'Food & groceries', account: accounts[0]?.name || 'Cash', date:localDateString(), type:'expense' })
@@ -248,7 +247,7 @@ export default function App() {
     await db.workspaceSnapshots.put({id:activeWorkspaceId,transactions,accounts,budgets:budgetItems,goals,recurring,dismissedNoticeIds,updatedAt:new Date().toISOString()})
     let snapshot=await db.workspaceSnapshots.get(id)
     if(!snapshot){snapshot={id,transactions:[],accounts:[],budgets:[],goals:[],recurring:[],dismissedNoticeIds:[],updatedAt:new Date().toISOString()};await db.workspaceSnapshots.put(snapshot)}
-    setActiveWorkspaceId(id);setTransactions(snapshot.transactions);setAccounts(snapshot.accounts);setBudgetItems(snapshot.budgets);setGoals(snapshot.goals);setRecurring(snapshot.recurring||[]);setDismissedNoticeIds(snapshot.dismissedNoticeIds||[]);setShowDemo(false);setWorkspaceMenu(false);setPage('Overview');setNotice('Switched to '+(workspaces.find(w=>w.id===id)?.name||'workspace')+'.')
+    setActiveWorkspaceId(id);setTransactions(snapshot.transactions);setAccounts(snapshot.accounts);setBudgetItems(snapshot.budgets);setGoals(snapshot.goals);setRecurring(snapshot.recurring||[]);setDismissedNoticeIds(snapshot.dismissedNoticeIds||[]);setShowDemo(false);setWorkspaceMenu(false);setMoreSheetOpen(false);setPage('Overview');setNotice('Switched to '+(workspaces.find(w=>w.id===id)?.name||'workspace')+'.')
   }
   const createWorkspace = (name:string,kind:'personal'|'workspace') => {
     if(!name.trim()||workspaces.some(w=>w.name.trim().toLowerCase()===name.trim().toLowerCase())){setNotice('Choose a unique, non-empty profile or workspace name.');return}
@@ -266,6 +265,7 @@ export default function App() {
     goals.filter(g=>g.target>0&&g.current>=g.target).forEach(g=>result.push({id:`goal-${g.name}`,title:`${g.name} goal completed`,detail:`Target reached at ${money(g.current)}`,date:'Milestone',kind:'goal'}))
     return result.filter(n=>!dismissedNoticeIds.includes(n.id))
   },[budgetItems,transactions,recurring,goals,dismissedNoticeIds])
+
   const exportCSV = () => {
     const rows = [['Date','Description','Type','Category','Account','Amount'], ...transactions.map(t=>[t.date,t.title,t.type,t.category,t.account,String(t.amount)])]
     const csv = rows.map(r=>r.map(v=>{const raw=String(v);const safe=/^[\s]*[=+@\-]/.test(raw)?`'${raw}`:raw;return '"'+safe.replace(/"/g,'""')+'"'}).join(',')).join('\n')
@@ -301,6 +301,8 @@ export default function App() {
   return <div className="app-root">
     <div className="ambient ambient-a"/><div className="ambient ambient-b"/>
     <div className="landscape landscape-a"/><div className="landscape landscape-b"/>
+
+    {/* Desktop Sidebar (strictly hidden on <=768px) */}
     <aside className={`sidebar ${mobileOpen?'sidebar-open':''}`}>
       <div className="sidebar-top"><Brand/><button className="icon-btn mobile-close" onClick={()=>setMobileOpen(false)} aria-label="Close navigation"><X size={18}/></button></div>
       <button className="workspace-select" onClick={()=>setWorkspaceMenu(v=>!v)}><span className="workspace-avatar">{(workspaces.find(w=>w.id===activeWorkspaceId)?.name||'P').slice(0,1).toUpperCase()}</span><span className="workspace-text"><b>{workspaces.find(w=>w.id===activeWorkspaceId)?.name||'Personal'}</b><small>{workspaces.find(w=>w.id===activeWorkspaceId)?.kind==='workspace'?'Workspace':'Personal profile'}</small></span><ChevronDown size={15}/></button>{workspaceMenu&&<div className="workspace-menu">{workspaces.map(w=><button key={w.id} className={w.id===activeWorkspaceId?'selected':''} onClick={()=>void switchWorkspace(w.id)}><span>{w.name}</span><small>{w.kind==='personal'?'Personal':'Workspace'}</small></button>)}<button className="workspace-manage" onClick={()=>{setWorkspaceMenu(false);go('Profile & Workspace')}}>Manage profiles and workspaces</button></div>}
@@ -311,11 +313,14 @@ export default function App() {
       <div className="sidebar-fill"/>
       <div className="privacy-card"><div className="privacy-icon"><LockKeyhole size={16}/></div><b>Your money. Your device.</b><p>Your financial data is saved in this browser with IndexedDB.</p><span><i/> Local-first by design</span></div>
       <button className="user-row" onClick={()=>go('Profile & Workspace')}><div className="user-avatar">{(workspaces.find(w=>w.id===activeWorkspaceId)?.name||'P').slice(0,1).toUpperCase()}</div><div><b>{workspaces.find(w=>w.id===activeWorkspaceId)?.name||'Personal'}</b><small>Local profile</small></div><Ellipsis size={18}/></button>
-      <nav className="mobile-tabs" aria-label="Primary navigation">{[{label:'Overview',icon:LayoutDashboard},{label:'Transactions',icon:ArrowLeftRight},{label:'Accounts',icon:Wallet},{label:'Budgets',icon:ChartPie},{label:'More',icon:Ellipsis}].map(({label,icon:Icon})=><button key={label} className={((label==='More'&&!['Overview','Transactions','Accounts','Budgets'].includes(page))||page===label)?'active':''} onClick={()=>label==='More'?setMobileOpen(v=>!v):go(label as Page)} aria-label={label}><Icon size={20}/><span>{label}</span></button>)}</nav>
     </aside>
+
     {mobileOpen&&<button className="scrim" onClick={()=>setMobileOpen(false)} aria-label="Close navigation"/>}
+
+    {/* Main scroll container */}
     <main className="main">
-      <header className="topbar mobile-page-header">
+      {/* Desktop Topbar (strictly hidden on <=768px) */}
+      <header className="topbar">
         <div className="top-left"><button className="icon-btn mobile-menu" onClick={()=>setMobileOpen(true)} aria-label="Open navigation"><Menu size={19}/></button><div className="crumb"><span>Workspace</span><ChevronRight size={13}/><b>{page}</b></div></div>
         <div className="top-actions"><label className="search"><Search size={15}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search transactions..."/><kbd>⌘ K</kbd></label><button className="icon-btn" aria-label="Notifications" onClick={()=>go('Notifications')}><Bell size={17}/>{notices.length>0&&<i/>}</button><button className="top-user" onClick={()=>go('Profile & Workspace')} aria-label="Open profile">{(workspaces.find(w=>w.id===activeWorkspaceId)?.name||'P').slice(0,1).toUpperCase()}</button></div>
       </header>
@@ -340,7 +345,114 @@ export default function App() {
         <footer className="footer"><div><Brand small/><span>Money, made more meaningful.</span></div><span>Designed for clarity <i>·</i> Built around you</span></footer>
       </div>
     </main>
-    {modal&&<TransactionModal form={form} setForm={setForm} close={()=>setModal(false)} save={saveTx} editing={!!editing} accounts={accounts.map(a=>a.name)}/>}
+
+    {/* Fixed Glassmorphic Bottom Tab Bar on mobile (<=768px) */}
+    <nav className="mobile-tab-bar" aria-label="Bottom Navigation">
+      {[
+        { label: 'Overview' as Page, icon: LayoutDashboard },
+        { label: 'Transactions' as Page, icon: ArrowLeftRight, badge: transactions.length },
+        { label: 'Accounts' as Page, icon: Wallet },
+        { label: 'Budgets' as Page, icon: ChartPie },
+        { label: 'More' as const, icon: Ellipsis, badge: notices.length > 0 ? notices.length : undefined }
+      ].map(({ label, icon: Icon, badge }) => {
+        const isMoreActive = label === 'More' && !['Overview','Transactions','Accounts','Budgets'].includes(page)
+        const isActive = page === label || isMoreActive
+        return (
+          <button
+            key={label}
+            className={`mobile-tab-item ${isActive ? 'active' : ''}`}
+            onClick={() => label === 'More' ? setMoreSheetOpen(v => !v) : go(label)}
+            aria-label={label}
+          >
+            <span className="mobile-tab-icon-wrap">
+              <Icon size={20} strokeWidth={isActive ? 2.4 : 1.8} />
+              {badge !== undefined && badge > 0 && <span className="mobile-tab-badge">{badge}</span>}
+            </span>
+            <span className="mobile-tab-label">{label}</span>
+          </button>
+        )
+      })}
+    </nav>
+
+    {/* Mobile Slide-Up Bottom Sheet for More Navigation */}
+    {moreSheetOpen && (
+      <div className="sheet-scrim" onMouseDown={e => { if (e.target === e.currentTarget) setMoreSheetOpen(false) }}>
+        <div className="bottom-sheet glass-card" role="dialog" aria-modal="true" aria-label="More navigation">
+          <div className="sheet-drag-pill" />
+          <div className="sheet-header">
+            <div>
+              <span className="eyebrow">NAVIGATION</span>
+              <h2 className="sheet-title">More features</h2>
+            </div>
+            <button className="icon-btn" onClick={() => setMoreSheetOpen(false)} aria-label="Close">
+              <X size={18} />
+            </button>
+          </div>
+          <div className="sheet-body">
+            <div className="mobile-workspace-card">
+              <div className="workspace-avatar">{(workspaces.find(w=>w.id===activeWorkspaceId)?.name||'P').slice(0,1).toUpperCase()}</div>
+              <div className="mobile-workspace-info">
+                <b>{workspaces.find(w=>w.id===activeWorkspaceId)?.name||'Personal'}</b>
+                <small>{workspaces.find(w=>w.id===activeWorkspaceId)?.kind==='workspace'?'Workspace':'Personal profile'}</small>
+              </div>
+              <button className="button button-light button-small" onClick={() => { setMoreSheetOpen(false); go('Profile & Workspace') }}>
+                Switch
+              </button>
+            </div>
+
+            <div className="sheet-section-title">FINANCIAL PLANNING</div>
+            <div className="sheet-nav-grid">
+              {[
+                { label: 'Savings Goals' as Page, icon: Target },
+                { label: 'Net Worth' as Page, icon: Landmark },
+                { label: 'Recurring' as Page, icon: CalendarDays },
+                { label: 'Calendar' as Page, icon: CalendarDays },
+                { label: 'Insights' as Page, icon: Sparkles },
+                { label: 'Reports' as Page, icon: FileSpreadsheet },
+              ].map(({ label, icon: Icon }) => (
+                <button
+                  key={label}
+                  className={`sheet-nav-item ${page === label ? 'active' : ''}`}
+                  onClick={() => go(label)}
+                >
+                  <Icon size={18} />
+                  <span>{label}</span>
+                </button>
+              ))}
+            </div>
+
+            <div className="sheet-section-title">PREFERENCES & CONTROLS</div>
+            <div className="sheet-nav-list">
+              {[
+                { label: 'Notifications' as Page, icon: Bell, badge: notices.length },
+                { label: 'Profile & Workspace' as Page, icon: Landmark },
+                { label: 'Privacy & Control' as Page, icon: ShieldCheck },
+                { label: 'Help Center' as Page, icon: CircleHelp },
+                { label: 'Settings' as Page, icon: Settings },
+              ].map(({ label, icon: Icon, badge }) => (
+                <button
+                  key={label}
+                  className={`sheet-list-item ${page === label ? 'active' : ''}`}
+                  onClick={() => go(label)}
+                >
+                  <div className="sheet-list-item-left">
+                    <Icon size={17} />
+                    <span>{label}</span>
+                  </div>
+                  <div className="sheet-list-item-right">
+                    {badge !== undefined && badge > 0 && <span className="sheet-chip">{badge}</span>}
+                    <ChevronRight size={15} />
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {/* Transaction Modal (slide-up bottom sheet on <=768px) */}
+    {modal && <TransactionModal form={form} setForm={setForm} close={()=>setModal(false)} save={saveTx} editing={!!editing} accounts={accounts.map(a=>a.name)}/>}
   </div>
 }
 
@@ -388,8 +500,34 @@ function Overview({totals,transactions,budgets,goals,range,setRange,openAdd,go,d
     <div className="section-title"><div><h2>Your overview</h2><p>A quick look at your financial picture.</p></div><label className="period"><CalendarDays size={14}/><select value={range} onChange={e=>setRange(e.target.value)}><option>This month</option><option>Last month</option><option>Last 3 months</option><option>This year</option></select><ChevronDown size={13}/></label></div>
     <section className="metric-grid"><Metric label="Total balance" value={money(totals.balance)} kind="balance" icon={Wallet}/><Metric label="Income" value={money(totals.income)} kind="income" icon={ArrowDownLeft}/><Metric label="Expenses" value={money(totals.expense)} kind="expense" icon={ArrowUpRight}/><Metric label="Net cash flow" value={signedMoney(totals.net)} kind="savings" icon={Target}/></section>
     <section className="analytics-grid">
-      <GlassCard className="chart-card"><div className="panel-head"><div><h3>Cash flow</h3><p>Income and expenses over time</p></div><button className="select-quiet">Last 6 months <ChevronDown size={13}/></button></div><div className="chart-legend"><span><i className="legend-income"/>Income</span><span><i className="legend-expense"/>Expenses</span></div><div className="chart-area"><ResponsiveContainer width="100%" height="100%"><AreaChart data={data} margin={{top:8,right:8,left:-18,bottom:0}}><defs><linearGradient id="incomeFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#636B2F" stopOpacity={.23}/><stop offset="100%" stopColor="#636B2F" stopOpacity={0}/></linearGradient><linearGradient id="expenseFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#BAC095" stopOpacity={.2}/><stop offset="100%" stopColor="#BAC095" stopOpacity={0}/></linearGradient></defs><CartesianGrid stroke="rgba(99,107,47,.14)" strokeDasharray="3 5" vertical={false}/><XAxis dataKey="month" axisLine={false} tickLine={false} tick={{fill:'#777b60',fontSize:11}} dy={9}/><YAxis axisLine={false} tickLine={false} tick={{fill:'#777b60',fontSize:10}} tickFormatter={v=>`₹${v/1000}k`}/><Tooltip formatter={(v)=>money(Number(v))} contentStyle={{border:'1px solid rgba(99,107,47,.18)',borderRadius:12,fontSize:12,boxShadow:'0 10px 30px rgba(61,65,39,.12)'}}/><Area type="monotone" dataKey="income" stroke="#636B2F" strokeWidth={2.4} fill="url(#incomeFill)"/><Area type="monotone" dataKey="expense" stroke="#BAC095" strokeWidth={2.2} fill="url(#expenseFill)"/></AreaChart></ResponsiveContainer></div></GlassCard>
-      <GlassCard className="spending-card"><div className="panel-head"><div><h3>Spending breakdown</h3><p>Where your money goes</p></div><button className="icon-quiet" aria-label="Spending options"><Ellipsis size={19}/></button></div><div className="spending-total"><b>{money(totals.expense)}</b><span>in selected period</span></div><div className="donut-wrap"><div className="donut-chart"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={spendData} dataKey="value" innerRadius="70%" outerRadius="94%" paddingAngle={3} stroke="none">{spendData.map((s,i)=><Cell key={i} fill={s.color}/>)}</Pie><Tooltip formatter={(v)=>`${v}%`}/></PieChart></ResponsiveContainer></div><div className="donut-center"><b>{spendData.length}</b><span>categories</span></div><div className="spend-legend">{spendData.length===0?<span className="no-spend">No expense entries yet</span>:spendData.map(s=><div key={s.name}><i style={{background:s.color}}/><span>{s.name}</span><b>{s.value}%</b></div>)}</div></div><button className="inline-link" onClick={()=>go('Transactions')}>Explore transactions <ArrowUpRight size={14}/></button></GlassCard>
+      <GlassCard className="chart-card">
+        <div className="panel-head"><div><h3>Cash flow</h3><p>Income and expenses over time</p></div><button className="select-quiet">Last 6 months <ChevronDown size={13}/></button></div>
+        <div className="chart-legend"><span><i className="legend-income"/>Income</span><span><i className="legend-expense"/>Expenses</span></div>
+        <div className="chart-scroll-wrap">
+          <div className="chart-area">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={data} margin={{top:8,right:8,left:-18,bottom:0}}>
+                <defs>
+                  <linearGradient id="incomeFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#636B2F" stopOpacity={.23}/><stop offset="100%" stopColor="#636B2F" stopOpacity={0}/></linearGradient>
+                  <linearGradient id="expenseFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#BAC095" stopOpacity={.2}/><stop offset="100%" stopColor="#BAC095" stopOpacity={0}/></linearGradient>
+                </defs>
+                <CartesianGrid stroke="rgba(99,107,47,.14)" strokeDasharray="3 5" vertical={false}/>
+                <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{fill:'#777b60',fontSize:11}} dy={9}/>
+                <YAxis axisLine={false} tickLine={false} tick={{fill:'#777b60',fontSize:10}} tickFormatter={v=>`₹${v/1000}k`}/>
+                <Tooltip formatter={(v)=>money(Number(v))} contentStyle={{border:'1px solid rgba(99,107,47,.18)',borderRadius:12,fontSize:12,boxShadow:'0 10px 30px rgba(61,65,39,.12)'}}/>
+                <Area type="monotone" dataKey="income" stroke="#636B2F" strokeWidth={2.4} fill="url(#incomeFill)"/>
+                <Area type="monotone" dataKey="expense" stroke="#BAC095" strokeWidth={2.2} fill="url(#expenseFill)"/>
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      </GlassCard>
+      <GlassCard className="spending-card">
+        <div className="panel-head"><div><h3>Spending breakdown</h3><p>Where your money goes</p></div><button className="icon-quiet" aria-label="Spending options"><Ellipsis size={19}/></button></div>
+        <div className="spending-total"><b>{money(totals.expense)}</b><span>in selected period</span></div>
+        <div className="donut-wrap"><div className="donut-chart"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={spendData} dataKey="value" innerRadius="70%" outerRadius="94%" paddingAngle={3} stroke="none">{spendData.map((s,i)=><Cell key={i} fill={s.color}/>)}</Pie><Tooltip formatter={(v)=>`${v}%`}/></PieChart></ResponsiveContainer></div><div className="donut-center"><b>{spendData.length}</b><span>categories</span></div><div className="spend-legend">{spendData.length===0?<span className="no-spend">No expense entries yet</span>:spendData.map(s=><div key={s.name}><i style={{background:s.color}}/><span>{s.name}</span><b>{s.value}%</b></div>)}</div></div>
+        <button className="inline-link" onClick={()=>go('Transactions')}>Explore transactions <ArrowUpRight size={14}/></button>
+      </GlassCard>
     </section>
     <section className="bottom-grid">
       <GlassCard className="recent-card"><div className="panel-head"><div><h3>Recent transactions</h3><p>Your latest money movements</p></div><button className="inline-link" onClick={()=>go('Transactions')}>View all <ArrowUpRight size={14}/></button></div>{recent.length===0?<EmptyState icon={ReceiptText} title="No transactions yet" text="Add your first entry to see activity here." action={<button className="button button-dark" onClick={openAdd}><Plus size={14}/> Add transaction</button>}/>:<div className="recent-list">{recent.map(t=><TransactionRow key={t.id} tx={t}/>)}</div>}</GlassCard>
@@ -400,14 +538,120 @@ function Overview({totals,transactions,budgets,goals,range,setRange,openAdd,go,d
 }
 function TransactionRow({tx}:{tx:Tx}) {
   const Icon=tx.type==='income'?ArrowDownLeft:ArrowUpRight
-  return <div className="transaction-row"><div className={`transaction-icon ${tx.type}`}><Icon size={17}/></div><div className="transaction-main"><b>{tx.title}</b><span>{tx.category} · {tx.account}</span></div><time>{dateLabel(tx.date)}</time><strong className={tx.type}>{tx.type==='income'?'+':'−'}{money(tx.amount)}</strong></div>
+  return <div className="transaction-row">
+    <div className={`transaction-icon ${tx.type}`}><Icon size={17}/></div>
+    <div className="transaction-main">
+      <b>{tx.title}</b>
+      <span>{tx.category} · {dateLabel(tx.date)}</span>
+      <small className="mobile-only-account">{tx.account}</small>
+    </div>
+    <time className="desktop-time">{dateLabel(tx.date)}</time>
+    <div className="transaction-right">
+      <strong className={tx.type}>{tx.type==='income'?'+':'−'}{money(tx.amount)}</strong>
+      <span className={`mobile-badge-tiny ${tx.type}`}>{tx.type==='income'?'Income':'Expense'}</span>
+    </div>
+  </div>
 }
 function TransactionsPage({transactions,query,setQuery,filter,setFilter,openAdd,edit,remove,exportCSV}:{transactions:Tx[];query:string;setQuery:(v:string)=>void;filter:string;setFilter:(v:string)=>void;openAdd:()=>void;edit:(tx:Tx)=>void;remove:(id:number)=>void;exportCSV:()=>void}) {
-  return <><PageHeading eyebrow="YOUR ACTIVITY" title={<>Every move, <em>accounted for.</em></>} subtitle="A complete record of your income and expenses." action={<><button className="button button-light" onClick={exportCSV}><Download size={15}/> Export CSV</button><button className="button button-dark" onClick={openAdd}><Plus size={16}/> Add transaction</button></>}/>
-    <GlassCard className="table-card"><div className="table-toolbar"><label className="table-search"><Search size={15}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search transactions..."/></label><div className="filter-group"><SlidersHorizontal size={15}/>{['All','Income','Expense'].map(v=><button key={v} className={filter===v?'chosen':''} onClick={()=>setFilter(v)}>{v}</button>)}</div></div>
-      <div className="table-scroll"><table><thead><tr><th>TRANSACTION</th><th>DATE</th><th>ACCOUNT</th><th>AMOUNT</th><th/></tr></thead><tbody>{transactions.map(t=><tr key={t.id}><td><div className="table-title"><span className={`transaction-icon ${t.type}`}>{t.type==='income'?<ArrowDownLeft size={16}/>:<ArrowUpRight size={16}/>}</span><span><b>{t.title}</b><small>{t.category}</small></span></div></td><td>{dateLabel(t.date)}</td><td>{t.account}</td><td><b className={t.type}>{t.type==='income'?'+':'−'}{money(t.amount)}</b></td><td><div className="row-actions"><button onClick={()=>edit(t)} aria-label="Edit transaction"><Pencil size={15}/></button><button onClick={()=>remove(t.id)} aria-label="Delete transaction"><Trash2 size={15}/></button></div></td></tr>)}</tbody></table></div><div className="mobile-transaction-cards">{transactions.map(t=><article className="mobile-transaction-card" key={`mobile-${t.id}`}><div><b>{t.title}</b><span>{t.category} · {dateLabel(t.date)}</span><small>{t.account}</small></div><strong className={t.type}>{t.type==='income'?'+':'−'}{money(t.amount)}</strong><div className="row-actions"><button onClick={()=>edit(t)} aria-label={`Edit ${t.title}`}><Pencil size={15}/></button><button onClick={()=>remove(t.id)} aria-label={`Delete ${t.title}`}><Trash2 size={15}/></button></div></article>)}</div>
+  return <>
+    <PageHeading
+      eyebrow="YOUR ACTIVITY"
+      title={<>Every move, <em>accounted for.</em></>}
+      subtitle="A complete record of your income and expenses."
+      action={<>
+        <button className="button button-light" onClick={exportCSV}><Download size={15}/> Export CSV</button>
+        <button className="button button-dark" onClick={openAdd}><Plus size={16}/> Add transaction</button>
+      </>}
+    />
+    <GlassCard className="table-card">
+      <div className="table-toolbar">
+        <label className="table-search">
+          <Search size={15}/>
+          <input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search transactions..."/>
+        </label>
+        <div className="filter-scroll-wrap">
+          <div className="filter-group">
+            <SlidersHorizontal size={15}/>
+            {['All','Income','Expense'].map(v=><button key={v} className={filter===v?'chosen':''} onClick={()=>setFilter(v)}>{v}</button>)}
+          </div>
+        </div>
+      </div>
+
+      {/* Desktop table (hidden on <=768px via CSS) */}
+      <div className="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>TRANSACTION</th>
+              <th>DATE</th>
+              <th>ACCOUNT</th>
+              <th>AMOUNT</th>
+              <th/>
+            </tr>
+          </thead>
+          <tbody>
+            {transactions.map(t=>(
+              <tr key={t.id}>
+                <td>
+                  <div className="table-title">
+                    <span className={`transaction-icon ${t.type}`}>{t.type==='income'?<ArrowDownLeft size={16}/>:<ArrowUpRight size={16}/>}</span>
+                    <span><b>{t.title}</b><small>{t.category}</small></span>
+                  </div>
+                </td>
+                <td>{dateLabel(t.date)}</td>
+                <td>{t.account}</td>
+                <td><b className={t.type}>{t.type==='income'?'+':'−'}{money(t.amount)}</b></td>
+                <td>
+                  <div className="row-actions">
+                    <button onClick={()=>edit(t)} aria-label="Edit transaction"><Pencil size={15}/></button>
+                    <button onClick={()=>remove(t.id)} aria-label="Delete transaction"><Trash2 size={15}/></button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Mobile Stacked Apple-Style List Cards (<=768px) */}
+      <div className="mobile-transaction-cards">
+        {transactions.map(t=>(
+          <article className="mobile-transaction-card" key={`mobile-${t.id}`}>
+            <div className="mobile-card-row">
+              <div className="mobile-card-left">
+                <div className="mobile-card-title-row">
+                  <span className={`transaction-icon-inline ${t.type}`}>
+                    {t.type==='income'?<ArrowDownLeft size={14}/>:<ArrowUpRight size={14}/>}
+                  </span>
+                  <b className="mobile-card-title">{t.title}</b>
+                </div>
+                <span className="mobile-card-sub">{t.category} · {dateLabel(t.date)}</span>
+                <small className="mobile-card-account">{t.account}</small>
+              </div>
+              <div className="mobile-card-right">
+                <strong className={`mobile-card-amount ${t.type}`}>
+                  {t.type==='income'?'+':'−'}{money(t.amount)}
+                </strong>
+                <span className={`mobile-card-badge ${t.type}`}>
+                  {t.type==='income'?'Income':'Expense'}
+                </span>
+              </div>
+            </div>
+            <div className="mobile-card-actions">
+              <button className="button button-light button-small" onClick={()=>edit(t)} aria-label={`Edit ${t.title}`}>
+                <Pencil size={14}/> Edit
+              </button>
+              <button className="button button-light button-small button-danger-text" onClick={()=>remove(t.id)} aria-label={`Delete ${t.title}`}>
+                <Trash2 size={14}/> Delete
+              </button>
+            </div>
+          </article>
+        ))}
+      </div>
+
       {transactions.length===0&&<EmptyState icon={ReceiptText} title="No matching transactions" text="Try another search or add a new transaction." action={<button className="button button-dark" onClick={openAdd}><Plus size={14}/> Add transaction</button>}/>}
-    </GlassCard></>
+    </GlassCard>
+  </>
 }
 function AccountsPage({accounts,setAccounts}:{accounts:{name:string;type:string;balance:number}[];setAccounts:React.Dispatch<React.SetStateAction<{name:string;type:string;balance:number}[]>>}) {
   const [adding,setAdding]=useState(false),[name,setName]=useState(''),[balance,setBalance]=useState(''),[accountType,setAccountType]=useState('Savings account')
@@ -423,7 +667,7 @@ function BudgetsPage({items,setItems,transactions}:{items:StoredBudget[];setItem
   const add=()=>{if(name.trim()&&Number.isFinite(Number(limit))&&Number(limit)>0&&!items.some(x=>x.name.toLowerCase()===name.trim().toLowerCase())){setItems(old=>[...old,{name:name.trim(),spent:0,limit:Number(limit),color:'#636B2F'}]);setName('');setLimit('');setAdding(false)}}
   const shiftMonth=(offset:number)=>{const d=new Date(`${month}-01T12:00:00`);d.setMonth(d.getMonth()+offset);setMonth(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`)}
   return <><PageHeading eyebrow="SPEND WITH INTENTION" title={<>A plan for <em>your spending.</em></>} subtitle="Set category limits and keep an eye on what remains." action={<button className="button button-dark" onClick={()=>setAdding(true)}><Plus size={16}/> Create budget</button>}/>
-    <div className="budget-period glass-card"><button className="icon-quiet" onClick={()=>shiftMonth(-1)} aria-label="Previous month"><ChevronRight className="flip-chevron" size={17}/></button><div><span>TRACKING PERIOD</span><b>{monthLabel}</b></div><button className="icon-quiet" onClick={()=>shiftMonth(1)} aria-label="Next month"><ChevronRight size={17}/></button><button className="button button-light" onClick={()=>setMonth(localDateString().slice(0,7))}>This month</button></div>
+    <div className="budget-period-scroll"><div className="budget-period glass-card"><button className="icon-quiet" onClick={()=>shiftMonth(-1)} aria-label="Previous month"><ChevronRight className="flip-chevron" size={17}/></button><div><span>TRACKING PERIOD</span><b>{monthLabel}</b></div><button className="icon-quiet" onClick={()=>shiftMonth(1)} aria-label="Next month"><ChevronRight size={17}/></button><button className="button button-light" onClick={()=>setMonth(localDateString().slice(0,7))}>This month</button></div></div>
     <div className="budget-summary-card glass-card"><div><span>Monthly budget</span><h2>{money(totalLimit)}</h2><p>Across {actualItems.length} categories</p></div><div><span>Tracked spending</span><h2>{money(totalSpent)}</h2><p className={totalSpent>totalLimit?'over-budget-text':''}>{totalSpent>totalLimit?`${money(totalSpent-totalLimit)} over budget`:`${money(totalLimit-totalSpent)} remaining`}</p></div></div>
     {actualItems.length===0?<GlassCard><EmptyState icon={ChartPie} title="No budgets set up" text="Create a category budget to start tracking your monthly spending." action={<button className="button button-dark" onClick={()=>setAdding(true)}><Plus size={14}/> Create budget</button>}/></GlassCard>:<div className="budget-list">{actualItems.map((b)=><GlassCard className="budget-item" key={b.name}><div className="budget-item-head"><div><h3>{b.name}</h3><span className={b.spent>b.limit?'over-budget-text':''}>{Math.round(b.spent/b.limit*100)}% used{b.spent>b.limit?' · Over limit':''}</span></div><div className="row-actions"><button onClick={()=>{const value=prompt(`Set monthly limit for ${b.name}`,String(b.limit));if(value!==null&&value.trim()!==''&&Number.isFinite(Number(value))&&Number(value)>0)setItems(old=>old.map(x=>x.name===b.name?{...x,limit:Number(value)}:x))}} aria-label={`Edit ${b.name} budget`}><Pencil size={14}/></button><button onClick={()=>{if(confirm(`Delete the ${b.name} budget?`))setItems(old=>old.filter(x=>x.name!==b.name))}} aria-label="Delete budget"><Trash2 size={15}/></button></div></div><div className="budget-numbers"><b>{money(b.spent)} <small>spent</small></b><span>of {money(b.limit)}</span></div><div className="progress large"><i style={{width:`${Math.min(100,b.spent/b.limit*100)}%`,background:b.spent>b.limit?'#3D4127':b.color}}/></div><p>{b.spent>b.limit?`${money(b.spent-b.limit)} over budget`:`${money(b.limit-b.spent)} left in this category`}</p></GlassCard>)}</div>}
     {adding&&<div className="inline-form glass-card"><h3>Create category budget</h3><input value={name} onChange={e=>setName(e.target.value)} placeholder="Category name"/><input value={limit} onChange={e=>setLimit(e.target.value)} type="number" min="1" placeholder="Monthly limit (₹)"/><button className="button button-dark" onClick={add}>Create budget</button><button className="button button-light" onClick={()=>setAdding(false)}>Cancel</button></div>}</>
@@ -441,5 +685,54 @@ function SettingsPage({exportJSON,importJSON,exportCSV,clearAllData}:{exportJSON
   return <><PageHeading eyebrow="YOUR SPACE, YOUR RULES" title={<>A little more <em>your way.</em></>} subtitle="Manage your data and application preferences."/><div className="settings-grid"><GlassCard className="settings-card"><div className="settings-icon"><ShieldCheck size={20}/></div><h3>Privacy & local data</h3><p>Mefin is designed as a local-first application. Your financial records stay in this browser on this device. Browser storage is not encrypted by Mefin, so protect your device and keep backups.</p><span className="local-status"><i/> Local-first workspace</span></GlassCard><GlassCard className="settings-card"><div className="settings-icon"><CloudDownload size={20}/></div><h3>Backup & restore</h3><p>Download a JSON backup of this profile’s accounts, transactions, budgets, goals, recurring schedules and reminder preferences. Import a previous Mefin JSON backup to restore it.</p><div className="settings-actions"><button className="button button-dark" onClick={exportJSON}><Download size={14}/> Export backup</button><label className="button button-light upload-button"><Upload size={14}/> Import backup<input type="file" accept="application/json" onChange={e=>importJSON(e.target.files?.[0])}/></label></div></GlassCard><GlassCard className="settings-card"><div className="settings-icon"><FileSpreadsheet size={20}/></div><h3>Transaction export</h3><p>Export your transaction list as a CSV file for spreadsheets and personal analysis.</p><button className="button button-light" onClick={exportCSV}><Download size={14}/> Export transactions</button></GlassCard><GlassCard className="settings-card"><div className="settings-icon"><CircleDollarSign size={20}/></div><h3>Currency</h3><p>Default currency for this MVP.</p><div className="currency-pill">₹ <b>Indian Rupee (INR)</b><Check size={15}/></div></GlassCard></div><GlassCard className="settings-card data-danger"><div className="settings-icon"><Trash2 size={20}/></div><h3>Clear local workspace</h3><p>Remove transactions, accounts, budgets, savings goals and recurring schedules from the active profile only. Other profiles remain unchanged.</p><button className="button button-light" onClick={clearAllData}>Clear active profile</button></GlassCard><div className="settings-footnote"><LockKeyhole size={15}/> No bank connections. No Mefin cloud database. No account sign-in.</div></>
 }
 function TransactionModal({form,setForm,close,save,editing,accounts}:{form:{title:string;amount:string;category:string;account:string;date:string;type:'income'|'expense'};setForm:React.Dispatch<React.SetStateAction<typeof form>>;close:()=>void;save:()=>void;editing:boolean;accounts:string[]}) {
-  return <div className="modal-scrim" onMouseDown={e=>{if(e.target===e.currentTarget)close()}}><div className="modal glass-card" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div className="modal-head"><div><span className="eyebrow">QUICK ENTRY</span><h2 id="modal-title">{editing?'Edit transaction':'Add a transaction'}</h2><p>Record a money movement manually.</p></div><button className="icon-btn" onClick={close} aria-label="Close"><X size={18}/></button></div><div className="type-switch"><button className={form.type==='expense'?'selected':''} onClick={()=>setForm(f=>({...f,type:'expense'}))}><ArrowUpRight size={15}/> Expense</button><button className={form.type==='income'?'selected income-selected':''} onClick={()=>setForm(f=>({...f,type:'income'}))}><ArrowDownLeft size={15}/> Income</button></div><label className="field-label">Amount</label><div className="amount-field"><span>₹</span><input autoFocus type="number" min="0.01" step="0.01" value={form.amount} onChange={e=>setForm(f=>({...f,amount:e.target.value}))} placeholder="0.00"/></div><label className="field-label">Description</label><input className="field" value={form.title} onChange={e=>setForm(f=>({...f,title:e.target.value}))} placeholder="e.g. Groceries, salary..."/><div className="form-two"><div><label className="field-label">Category</label><select className="field" value={form.category} onChange={e=>setForm(f=>({...f,category:e.target.value}))}>{['Food & groceries','Home & bills','Transport','Shopping','Health','Entertainment','Subscriptions','Salary','Freelance','Other'].map(c=><option key={c}>{c}</option>)}</select></div><div><label className="field-label">Account</label><select className="field" value={form.account} onChange={e=>setForm(f=>({...f,account:e.target.value}))}>{accounts.length===0&&<option value="Cash">Cash (manual)</option>}{accounts.map(a=><option key={a}>{a}</option>)}</select></div></div><label className="field-label">Date</label><input className="field" type="date" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))}/><div className="modal-privacy"><ShieldCheck size={15}/> Your entries are intended to remain on this device.</div><div className="modal-actions"><button className="button button-light" onClick={close}>Cancel</button><button className="button button-dark" onClick={save}>{editing?'Save changes':'Add transaction'} <ChevronRight size={15}/></button></div></div></div>
+  return <div className="modal-scrim" onMouseDown={e=>{if(e.target===e.currentTarget)close()}}>
+    <div className="modal glass-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div className="sheet-drag-pill" />
+      <div className="modal-head">
+        <div>
+          <span className="eyebrow">QUICK ENTRY</span>
+          <h2 id="modal-title">{editing?'Edit transaction':'Add a transaction'}</h2>
+          <p>Record a money movement manually.</p>
+        </div>
+        <button className="icon-btn" onClick={close} aria-label="Close"><X size={18}/></button>
+      </div>
+      <div className="type-switch">
+        <button className={form.type==='expense'?'selected':''} onClick={()=>setForm(f=>({...f,type:'expense'}))}>
+          <ArrowUpRight size={15}/> Expense
+        </button>
+        <button className={form.type==='income'?'selected income-selected':''} onClick={()=>setForm(f=>({...f,type:'income'}))}>
+          <ArrowDownLeft size={15}/> Income
+        </button>
+      </div>
+      <label className="field-label">Amount</label>
+      <div className="amount-field">
+        <span>₹</span>
+        <input autoFocus type="number" min="0.01" step="0.01" value={form.amount} onChange={e=>setForm(f=>({...f,amount:e.target.value}))} placeholder="0.00"/>
+      </div>
+      <label className="field-label">Description</label>
+      <input className="field" value={form.title} onChange={e=>setForm(f=>({...f,title:e.target.value}))} placeholder="e.g. Groceries, salary..."/>
+      <div className="form-two">
+        <div>
+          <label className="field-label">Category</label>
+          <select className="field" value={form.category} onChange={e=>setForm(f=>({...f,category:e.target.value}))}>
+            {['Food & groceries','Home & bills','Transport','Shopping','Health','Entertainment','Subscriptions','Salary','Freelance','Other'].map(c=><option key={c}>{c}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="field-label">Account</label>
+          <select className="field" value={form.account} onChange={e=>setForm(f=>({...f,account:e.target.value}))}>
+            {accounts.length===0&&<option value="Cash">Cash (manual)</option>}
+            {accounts.map(a=><option key={a}>{a}</option>)}
+          </select>
+        </div>
+      </div>
+      <label className="field-label">Date</label>
+      <input className="field" type="date" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))}/>
+      <div className="modal-privacy"><ShieldCheck size={15}/> Your entries are intended to remain on this device.</div>
+      <div className="modal-actions">
+        <button className="button button-light" onClick={close}>Cancel</button>
+        <button className="button button-dark" onClick={save}>{editing?'Save changes':'Add transaction'} <ChevronRight size={15}/></button>
+      </div>
+    </div>
+  </div>
 }
