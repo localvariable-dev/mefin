@@ -183,6 +183,73 @@ export async function loginOrRegister(
   return data
 }
 
+export async function changePassword(currentPassword: string, newPassword: string): Promise<{ success: boolean; message: string }> {
+  const token = getAuthToken()
+  const user = getAuthUser()
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (token) headers['Authorization'] = `Bearer ${token}`
+
+  const res = await fetch('/api/auth', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      mode: 'change-password',
+      email: user?.email,
+      currentPassword,
+      newPassword,
+    }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || 'Failed to change password.')
+  }
+  return data
+}
+
+export async function requestPasswordReset(email: string): Promise<{ success: boolean; message: string }> {
+  const res = await fetch('/api/auth', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode: 'request-reset', email }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || 'Failed to request password reset.')
+  }
+  return data
+}
+
+export async function confirmPasswordReset(
+  email: string,
+  otp: string,
+  newPassword: string
+): Promise<{ token: string; user: { id: string; email: string }; snapshot?: MefinDB }> {
+  const res = await fetch('/api/auth', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      mode: 'confirm-reset',
+      email,
+      otp,
+      newPassword,
+    }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || 'Failed to reset password.')
+  }
+
+  if (data.token) {
+    try {
+      localStorage.setItem(TOKEN_KEY, data.token)
+      if (data.user) {
+        localStorage.setItem(USER_KEY, JSON.stringify(data.user))
+      }
+    } catch {}
+  }
+  return data
+}
+
 export function getLocalCachedDB(): MefinDB | null {
   try {
     const raw = localStorage.getItem(CACHE_KEY)

@@ -11,6 +11,9 @@ import {
   saveDB,
   pullRemoteDB,
   loginOrRegister,
+  changePassword,
+  requestPasswordReset,
+  confirmPasswordReset,
   getAuthToken,
   getAuthUser,
   logout,
@@ -135,14 +138,59 @@ function SyncIndicator({ syncInfo, onManualSync }: { syncInfo: SyncInfo; onManua
 }
 
 function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: { id: string; email: string }) => void }) {
-  const [mode, setMode] = useState<'login' | 'register'>('login')
+  const [mode, setMode] = useState<'login' | 'register' | 'reset'>('login')
+  const [resetStep, setResetStep] = useState<1 | 2>(1)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [resetOtp, setResetOtp] = useState('')
+  const [newPassword, setNewPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [info, setInfo] = useState('')
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    setError('')
+    setInfo('')
+
+    if (mode === 'reset') {
+      if (resetStep === 1) {
+        if (!email.trim() || !email.includes('@')) {
+          setError('Please enter a valid email address.')
+          return
+        }
+        setLoading(true)
+        try {
+          const res = await requestPasswordReset(email.trim())
+          setInfo(res.message || 'A 6-digit recovery code was sent.')
+          setResetStep(2)
+        } catch (err: any) {
+          setError(err?.message || 'Failed to request reset code.')
+        } finally {
+          setLoading(false)
+        }
+      } else {
+        if (!resetOtp.trim()) {
+          setError('Please enter the 6-digit reset code.')
+          return
+        }
+        if (!newPassword || newPassword.length < 6) {
+          setError('New password must be at least 6 characters.')
+          return
+        }
+        setLoading(true)
+        try {
+          const res = await confirmPasswordReset(email.trim(), resetOtp.trim(), newPassword)
+          onAuthenticated(res.user)
+        } catch (err: any) {
+          setError(err?.message || 'Failed to reset password.')
+        } finally {
+          setLoading(false)
+        }
+      }
+      return
+    }
+
     if (!email.trim() || !password) {
       setError('Please provide your email and password.')
       return
@@ -152,7 +200,6 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: { id: string;
       return
     }
     setLoading(true)
-    setError('')
     try {
       const res = await loginOrRegister(mode, email.trim(), password)
       onAuthenticated(res.user)
@@ -174,31 +221,50 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: { id: string;
         <div className="auth-header">
           <Brand />
           <h1 className="auth-title">
-            {mode === 'login' ? 'Sign in to Mefin' : 'Create your private vault'}
+            {mode === 'reset'
+              ? 'Reset Password'
+              : mode === 'login'
+              ? 'Sign in to Mefin'
+              : 'Create your private vault'}
           </h1>
           <p className="auth-subtitle">
-            {mode === 'login'
+            {mode === 'reset'
+              ? resetStep === 1
+                ? 'Enter your account email to receive a 6-digit verification code.'
+                : 'Enter the 6-digit code sent to your email and your new password.'
+              : mode === 'login'
               ? 'Enter your credentials to access and sync your encrypted financial vault.'
               : 'Sign up to sync your workspaces and records seamlessly across devices with Cloudflare D1.'}
           </p>
         </div>
 
-        <div className="auth-segmented" role="tablist">
+        {mode !== 'reset' ? (
+          <div className="auth-segmented" role="tablist">
+            <button
+              type="button"
+              className={`auth-segment-btn ${mode === 'login' ? 'active' : ''}`}
+              onClick={() => { setMode('login'); setError(''); setInfo('') }}
+            >
+              Sign In
+            </button>
+            <button
+              type="button"
+              className={`auth-segment-btn ${mode === 'register' ? 'active' : ''}`}
+              onClick={() => { setMode('register'); setError(''); setInfo('') }}
+            >
+              Create Account
+            </button>
+          </div>
+        ) : (
           <button
             type="button"
-            className={`auth-segment-btn ${mode === 'login' ? 'active' : ''}`}
-            onClick={() => { setMode('login'); setError('') }}
+            className="inline-link"
+            style={{ alignSelf: 'center', fontSize: '13px', cursor: 'pointer' }}
+            onClick={() => { setMode('login'); setResetStep(1); setError(''); setInfo('') }}
           >
-            Sign In
+            ← Back to Sign In
           </button>
-          <button
-            type="button"
-            className={`auth-segment-btn ${mode === 'register' ? 'active' : ''}`}
-            onClick={() => { setMode('register'); setError('') }}
-          >
-            Create Account
-          </button>
-        </div>
+        )}
 
         {error && (
           <div className="auth-error" role="alert">
@@ -207,51 +273,148 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: { id: string;
           </div>
         )}
 
-        <form className="auth-form" onSubmit={handleSubmit}>
-          <div className="auth-field-group">
-            <label className="auth-label" htmlFor="auth-email">Email Address</label>
-            <div className="auth-input-wrap">
-              <Mail size={16} />
-              <input
-                id="auth-email"
-                type="email"
-                required
-                autoFocus
-                autoComplete="email"
-                placeholder="name@example.com"
-                className="auth-input"
-                value={email}
-                onChange={e => setEmail(e.target.value)}
-              />
-            </div>
+        {info && (
+          <div className="notice" role="status">
+            <span>{info}</span>
           </div>
+        )}
 
-          <div className="auth-field-group">
-            <label className="auth-label" htmlFor="auth-password">Password</label>
-            <div className="auth-input-wrap">
-              <KeyRound size={16} />
-              <input
-                id="auth-password"
-                type="password"
-                required
-                autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-                placeholder="••••••••"
-                className="auth-input"
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-              />
-            </div>
-          </div>
+        <form className="auth-form" onSubmit={handleSubmit}>
+          {mode === 'reset' ? (
+            resetStep === 1 ? (
+              <div className="auth-field-group">
+                <label className="auth-label" htmlFor="reset-email">Account Email</label>
+                <div className="auth-input-wrap">
+                  <Mail size={16} />
+                  <input
+                    id="reset-email"
+                    type="email"
+                    required
+                    autoFocus
+                    autoComplete="email"
+                    placeholder="name@example.com"
+                    className="auth-input"
+                    value={email}
+                    onChange={e => setEmail(e.target.value)}
+                  />
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="auth-field-group">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <label className="auth-label" htmlFor="reset-otp">6-Digit Code</label>
+                    <button
+                      type="button"
+                      className="inline-link"
+                      style={{ fontSize: '11.5px', cursor: 'pointer' }}
+                      onClick={() => { setResetStep(1); setError(''); setInfo('') }}
+                    >
+                      Resend code
+                    </button>
+                  </div>
+                  <div className="auth-input-wrap">
+                    <KeyRound size={16} />
+                    <input
+                      id="reset-otp"
+                      type="text"
+                      required
+                      autoFocus
+                      maxLength={6}
+                      placeholder="123456"
+                      className="auth-input"
+                      value={resetOtp}
+                      onChange={e => setResetOtp(e.target.value.replace(/\D/g, ''))}
+                    />
+                  </div>
+                </div>
+
+                <div className="auth-field-group">
+                  <label className="auth-label" htmlFor="reset-new-password">New Password</label>
+                  <div className="auth-input-wrap">
+                    <KeyRound size={16} />
+                    <input
+                      id="reset-new-password"
+                      type="password"
+                      required
+                      autoComplete="new-password"
+                      placeholder="Min 6 characters"
+                      className="auth-input"
+                      value={newPassword}
+                      onChange={e => setNewPassword(e.target.value)}
+                    />
+                  </div>
+                </div>
+              </>
+            )
+          ) : (
+            <>
+              <div className="auth-field-group">
+                <label className="auth-label" htmlFor="auth-email">Email Address</label>
+                <div className="auth-input-wrap">
+                  <Mail size={16} />
+                  <input
+                    id="auth-email"
+                    type="email"
+                    required
+                    autoFocus
+                    autoComplete="email"
+                    placeholder="name@example.com"
+                    className="auth-input"
+                    value={email}
+                    onChange={e => setEmail(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div className="auth-field-group">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <label className="auth-label" htmlFor="auth-password">Password</label>
+                  {mode === 'login' && (
+                    <button
+                      type="button"
+                      className="inline-link"
+                      style={{ fontSize: '11.5px', cursor: 'pointer' }}
+                      onClick={() => { setMode('reset'); setResetStep(1); setError(''); setInfo('') }}
+                    >
+                      Forgot password?
+                    </button>
+                  )}
+                </div>
+                <div className="auth-input-wrap">
+                  <KeyRound size={16} />
+                  <input
+                    id="auth-password"
+                    type="password"
+                    required
+                    autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+                    placeholder="••••••••"
+                    className="auth-input"
+                    value={password}
+                    onChange={e => setPassword(e.target.value)}
+                  />
+                </div>
+              </div>
+            </>
+          )}
 
           <button type="submit" className="auth-submit-btn" disabled={loading}>
             {loading ? (
               <>
                 <RefreshCw size={16} className="spin-icon" />
-                <span>{mode === 'login' ? 'Signing in…' : 'Creating vault…'}</span>
+                <span>
+                  {mode === 'reset'
+                    ? resetStep === 1 ? 'Sending code…' : 'Resetting password…'
+                    : mode === 'login' ? 'Signing in…' : 'Creating vault…'}
+                </span>
               </>
             ) : (
               <>
-                <span>{mode === 'login' ? 'Sign In to Mefin' : 'Create Vault & Get Started'}</span>
+                <span>
+                  {mode === 'reset'
+                    ? resetStep === 1 ? 'Send 6-Digit Code' : 'Reset Password & Sign In'
+                    : mode === 'login' ? 'Sign In to Mefin' : 'Create Vault & Get Started'}
+                </span>
                 <ChevronRight size={16} />
               </>
             )}
@@ -1184,6 +1347,72 @@ function GoalsPage({goals,setGoals}:{goals:{name:string;current:number;target:nu
     {goals.length===0?<GlassCard><EmptyState icon={Target} title="No savings goals yet" text="Create a goal and track your progress as you contribute." action={<button className="button button-dark" onClick={()=>setAdding(true)}><Plus size={14}/> Create a goal</button>}/></GlassCard>:<div className="goal-grid">{goals.map((g,i)=><GlassCard className="goal-card" key={g.name}><div className="goal-card-head"><div className={`goal-symbol goal-${i%3}`}><Target size={20}/></div><button className="icon-quiet" onClick={()=>{if(confirm(`Delete the ${g.name} goal?`))setGoals(old=>old.filter(x=>x.name!==g.name))}} aria-label="Delete goal"><Trash2 size={15}/></button></div><span>SAVINGS GOAL</span><h3>{g.name}</h3><b className="goal-amount">{money(g.current)} <small>of {money(g.target)}</small></b><div className="progress large"><i style={{width:`${Math.min(100,g.current/g.target*100)}%`}}/></div><div className="goal-foot"><span>{Math.round(g.current/g.target*100)}% completed</span><span>{g.date}</span></div>{g.current>=g.target?<div className="goal-complete">Goal reached</div>:contributing===g.name?<div className="contribution-form"><input aria-label="Contribution amount" value={contribution} onChange={e=>setContribution(e.target.value)} type="number" min="0.01" step="0.01" placeholder="Amount in ₹"/><button className="button button-dark" onClick={()=>addContribution(g.name)}>Add</button><button className="button button-light" onClick={()=>{setContributing(null);setContribution('')}}>Cancel</button></div>:<button className="button button-light contribution" onClick={()=>setContributing(g.name)}>Add contribution</button>}</GlassCard>)}</div>}
     {adding&&<div className="inline-form glass-card"><h3>Create savings goal</h3><input value={name} onChange={e=>setName(e.target.value)} placeholder="Goal name"/><input value={target} onChange={e=>setTarget(e.target.value)} type="number" min="1" placeholder="Target amount (₹)"/><input value={deadline} onChange={e=>setDeadline(e.target.value)} type="month" aria-label="Target month (optional)"/><button className="button button-dark" onClick={add}>Create goal</button><button className="button button-light" onClick={()=>setAdding(false)}>Cancel</button></div>}</>
 }
+function SecurityPasswordCard() {
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [status, setStatus] = useState<{ text: string; error: boolean } | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  const handleUpdate = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!currentPassword || !newPassword) {
+      setStatus({ text: 'Please fill in both fields.', error: true })
+      return
+    }
+    if (newPassword.length < 6) {
+      setStatus({ text: 'New password must be at least 6 characters.', error: true })
+      return
+    }
+    setLoading(true)
+    setStatus(null)
+    try {
+      const res = await changePassword(currentPassword, newPassword)
+      setStatus({ text: res.message || 'Password updated successfully.', error: false })
+      setCurrentPassword('')
+      setNewPassword('')
+    } catch (err: any) {
+      setStatus({ text: err?.message || 'Failed to update password.', error: true })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <GlassCard className="settings-card">
+      <div className="settings-icon"><KeyRound size={20} /></div>
+      <h3>Security & Password</h3>
+      <p>Change the master password protecting your synced Cloudflare D1 vault.</p>
+      {status && (
+        <div className={status.error ? 'auth-error' : 'notice'} style={{ marginTop: '8px', padding: '8px 12px', fontSize: '13px' }}>
+          <span>{status.text}</span>
+        </div>
+      )}
+      <form onSubmit={handleUpdate} style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '10px' }}>
+        <input
+          type="password"
+          placeholder="Current password"
+          className="field"
+          value={currentPassword}
+          onChange={e => setCurrentPassword(e.target.value)}
+          required
+        />
+        <input
+          type="password"
+          placeholder="New password (min 6 characters)"
+          className="field"
+          value={newPassword}
+          onChange={e => setNewPassword(e.target.value)}
+          required
+        />
+        <button type="submit" className="button button-dark" style={{ alignSelf: 'flex-start', marginTop: '4px' }} disabled={loading}>
+          {loading ? <RefreshCw size={13} className="spin-icon" /> : null}
+          Update Password
+        </button>
+      </form>
+    </GlassCard>
+  )
+}
+
 function SettingsPage({
   exportJSON,
   importJSON,
@@ -1229,6 +1458,8 @@ function SettingsPage({
           </div>
         </div>
       </GlassCard>
+
+      <SecurityPasswordCard />
 
       <GlassCard className="settings-card">
         <div className="settings-icon"><ShieldCheck size={20}/></div>
