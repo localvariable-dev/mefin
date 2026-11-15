@@ -64,9 +64,8 @@ The first launch includes clearly labelled illustrative preview records. Use **C
 ## Deploy to GitHub Pages
 
 1. Create an empty repository on GitHub and upload/push this project to its `main` branch. Do not commit `node_modules` or `dist`.
-2. In the repository, open **Settings → Pages** and choose **GitHub Actions** as the build and deployment source.
-3. Push to `main`. The workflow in `.github/workflows/deploy.yml` builds and publishes `dist`.
-4. Find the published URL under **Settings → Pages**.
+2. Push to `main`. The workflow in `.github/workflows/deploy.yml` configures Pages, builds, and publishes `dist`.
+3. Find the published URL under **Settings → Pages** after the workflow completes.
 
 The workflow handles repository project sites (for example, `https://USERNAME.github.io/REPOSITORY/`) automatically. For a user site (`USERNAME.github.io`) or custom domain, change `PAGES_BASE_PATH` in the workflow build step to `/` before deploying.
 
