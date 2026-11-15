@@ -1,0 +1,8 @@
+name = "mefin"
+pages_build_output_dir = "dist"
+compatibility_date = "2024-09-23"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "mefin-db"
+database_id = "2fc11828-a3af-4b5f-9beb-091b95aecf6e"

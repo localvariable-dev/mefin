@@ -1,5 +1,23 @@
 import { useEffect, useMemo, useState } from 'react'
-import { db, type StoredAccount, type StoredBudget, type StoredGoal, type RecurringItem, type Workspace } from './db'
+import {
+  db,
+  type StoredAccount,
+  type StoredBudget,
+  type StoredGoal,
+  type RecurringItem,
+  type Workspace,
+  type WorkspaceSnapshot,
+  type SyncInfo,
+  saveDB,
+  pullRemoteDB,
+  loginOrRegister,
+  getAuthToken,
+  getAuthUser,
+  logout,
+  subscribeSyncStatus,
+  getSyncStatus,
+  applySnapshotToDexie
+} from './db'
 import type { Tx } from './types'
 import { NetWorthPage, RecurringPage, CalendarPage, InsightsPage, NotificationsPage, ReportsPage, PrivacyPage, HelpPage, ProfileWorkspacePage, type NoticeItem } from './ExtendedPages'
 import {
@@ -7,7 +25,8 @@ import {
   Bell, Plus, ChevronDown, ChevronRight, Menu, X, ShieldCheck, ArrowUpRight,
   ArrowDownLeft, Ellipsis, Download, Sparkles, Landmark, SlidersHorizontal,
   CalendarDays, CircleHelp, ReceiptText, CircleDollarSign, Pencil, Trash2, Check,
-  CloudDownload, Upload, FileSpreadsheet, LockKeyhole
+  CloudDownload, Upload, FileSpreadsheet, LockKeyhole, LogOut, RefreshCw,
+  Cloud, Mail, KeyRound
 } from 'lucide-react'
 import {
   Area, AreaChart, CartesianGrid, Cell, Pie, PieChart,
@@ -16,7 +35,7 @@ import {
 
 type Page = 'Overview' | 'Transactions' | 'Accounts' | 'Budgets' | 'Savings Goals' | 'Net Worth' | 'Recurring' | 'Calendar' | 'Insights' | 'Notifications' | 'Reports' | 'Profile & Workspace' | 'Privacy & Control' | 'Help Center' | 'Settings'
 const localDateString = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}` }
-const offsetDate = (days: number) => { const d = new Date(); d.setDate(d.getDate()+days); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}` }
+const offsetDate = (days: number) => { const d = new Date(); d.setDate(d.getDate()+days); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}` }
 const demoTransactions: Tx[] = [
   { id: 101, title: 'Monthly salary', category: 'Salary', account: 'HDFC Savings', date: offsetDate(-1), amount: 72000, type: 'income' },
   { id: 102, title: 'Freelance design project', category: 'Freelance', account: 'HDFC Savings', date: offsetDate(-4), amount: 12500, type: 'income' },
@@ -75,7 +94,184 @@ function EmptyState({ icon: Icon, title, text, action }: { icon: typeof ReceiptT
   return <div className="empty-state"><div className="empty-icon"><Icon size={22}/></div><h3>{title}</h3><p>{text}</p>{action}</div>
 }
 
+function SyncIndicator({ syncInfo, onManualSync }: { syncInfo: SyncInfo; onManualSync: () => void }) {
+  const label =
+    syncInfo.status === 'syncing'
+      ? 'Syncing…'
+      : syncInfo.status === 'synced'
+      ? 'Synced'
+      : syncInfo.status === 'error'
+      ? 'Offline'
+      : 'Cloud'
+
+  const timeLabel = syncInfo.lastSyncedAt
+    ? `Synced ${new Date(syncInfo.lastSyncedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+    : 'Cloud sync ready'
+
+  return (
+    <button
+      type="button"
+      className="sync-pill sync-pill-btn"
+      onClick={onManualSync}
+      title={`${timeLabel} · Click to sync now`}
+      aria-label={label}
+    >
+      {syncInfo.status === 'syncing' ? (
+        <RefreshCw size={12} className="spin-icon" />
+      ) : (
+        <span
+          className={`sync-dot ${
+            syncInfo.status === 'synced'
+              ? 'sync-dot-synced'
+              : syncInfo.status === 'error'
+              ? 'sync-dot-error'
+              : 'sync-dot-syncing'
+          }`}
+        />
+      )}
+      <span>{label}</span>
+    </button>
+  )
+}
+
+function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: { id: string; email: string }) => void }) {
+  const [mode, setMode] = useState<'login' | 'register'>('login')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!email.trim() || !password) {
+      setError('Please provide your email and password.')
+      return
+    }
+    if (password.length < 6) {
+      setError('Password must be at least 6 characters.')
+      return
+    }
+    setLoading(true)
+    setError('')
+    try {
+      const res = await loginOrRegister(mode, email.trim(), password)
+      onAuthenticated(res.user)
+    } catch (err: any) {
+      setError(err?.message || 'Authentication failed. Please try again.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="auth-wrapper">
+      <div className="ambient ambient-a" />
+      <div className="ambient ambient-b" />
+      <div className="landscape landscape-a" />
+      <div className="landscape landscape-b" />
+
+      <div className="auth-card">
+        <div className="auth-header">
+          <Brand />
+          <h1 className="auth-title">
+            {mode === 'login' ? 'Sign in to Mefin' : 'Create your private vault'}
+          </h1>
+          <p className="auth-subtitle">
+            {mode === 'login'
+              ? 'Enter your credentials to access and sync your encrypted financial vault.'
+              : 'Sign up to sync your workspaces and records seamlessly across devices with Cloudflare D1.'}
+          </p>
+        </div>
+
+        <div className="auth-segmented" role="tablist">
+          <button
+            type="button"
+            className={`auth-segment-btn ${mode === 'login' ? 'active' : ''}`}
+            onClick={() => { setMode('login'); setError('') }}
+          >
+            Sign In
+          </button>
+          <button
+            type="button"
+            className={`auth-segment-btn ${mode === 'register' ? 'active' : ''}`}
+            onClick={() => { setMode('register'); setError('') }}
+          >
+            Create Account
+          </button>
+        </div>
+
+        {error && (
+          <div className="auth-error" role="alert">
+            <LockKeyhole size={16} />
+            <span>{error}</span>
+          </div>
+        )}
+
+        <form className="auth-form" onSubmit={handleSubmit}>
+          <div className="auth-field-group">
+            <label className="auth-label" htmlFor="auth-email">Email Address</label>
+            <div className="auth-input-wrap">
+              <Mail size={16} />
+              <input
+                id="auth-email"
+                type="email"
+                required
+                autoFocus
+                autoComplete="email"
+                placeholder="name@example.com"
+                className="auth-input"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="auth-field-group">
+            <label className="auth-label" htmlFor="auth-password">Password</label>
+            <div className="auth-input-wrap">
+              <KeyRound size={16} />
+              <input
+                id="auth-password"
+                type="password"
+                required
+                autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+                placeholder="••••••••"
+                className="auth-input"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <button type="submit" className="auth-submit-btn" disabled={loading}>
+            {loading ? (
+              <>
+                <RefreshCw size={16} className="spin-icon" />
+                <span>{mode === 'login' ? 'Signing in…' : 'Creating vault…'}</span>
+              </>
+            ) : (
+              <>
+                <span>{mode === 'login' ? 'Sign In to Mefin' : 'Create Vault & Get Started'}</span>
+                <ChevronRight size={16} />
+              </>
+            )}
+          </button>
+        </form>
+
+        <div className="auth-badge">
+          <ShieldCheck size={14} />
+          <span>Web Crypto PBKDF2 hashing · Cloudflare D1 Cloud Sync</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function App() {
+  const [token, setToken] = useState<string | null>(() => getAuthToken())
+  const [currentUser, setCurrentUser] = useState<{ id: string; email: string } | null>(() => getAuthUser())
+  const [syncInfo, setSyncInfo] = useState<SyncInfo>(() => getSyncStatus())
+
   const [page, setPage] = useState<Page>('Overview')
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [activeWorkspaceId, setActiveWorkspaceId] = useState('personal')
@@ -98,6 +294,11 @@ export default function App() {
   const [goals, setGoals] = useState<StoredGoal[]>([{ name: 'Emergency fund', current: 18000, target: 50000, date: 'Mar 2027' }, { name: 'New laptop', current: 24000, target: 65000, date: 'Jun 2027' }])
   const [showDemo, setShowDemo] = useState(true)
 
+  // Subscribe to live sync status updates
+  useEffect(() => {
+    return subscribeSyncStatus(setSyncInfo)
+  }, [])
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); document.querySelector<HTMLInputElement>('.search input')?.focus() }
@@ -108,54 +309,219 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [accounts])
 
+  // Initial load: pull latest D1 state if token is present, else load local Dexie
   useEffect(() => {
+    if (!token) return
     let active = true
-    const load = async () => {
+
+    const loadData = async () => {
       try {
-        let profiles = await db.workspaces.toArray()
-        if (!profiles.length) {
-          profiles = [{ id: 'personal', name: 'Personal', kind: 'personal', createdAt: new Date().toISOString() }]
-          await db.workspaces.bulkPut(profiles)
-        }
-        const storedActive = await db.meta.get('activeWorkspaceId')
-        const activeId = typeof storedActive?.value === 'string' && profiles.some(w=>w.id===storedActive.value) ? storedActive.value : (profiles.find(w=>w.kind==='personal')?.id || profiles[0].id)
-        let snapshot = await db.workspaceSnapshots.get(activeId)
-        if (!snapshot) {
-          const [savedTransactions,savedAccounts,savedBudgets,savedGoals,initialized,savedRecurring] = await Promise.all([
-            db.transactions.toArray(),db.accounts.toArray(),db.budgets.toArray(),db.goals.toArray(),db.meta.get('initialized'),db.recurring.toArray()
-          ])
-          const hasSavedData = savedTransactions.length+savedAccounts.length+savedBudgets.length+savedGoals.length+savedRecurring.length>0
-          if (!hasSavedData && !initialized && activeId===profiles[0].id) {
-            await db.transaction('rw',db.transactions,db.accounts,db.budgets,db.goals,db.meta,async()=>{
-              await Promise.all([db.transactions.bulkPut(seed),db.accounts.bulkPut([{name:'HDFC Savings',type:'Savings account',balance:64250},{name:'Cash',type:'Cash',balance:8500},{name:'SBI Current',type:'Current account',balance:11500}]),db.budgets.bulkPut(budgets),db.goals.bulkPut([{name:'Emergency fund',current:18000,target:50000,date:'Mar 2027'},{name:'New laptop',current:24000,target:65000,date:'Jun 2027'}]),db.meta.put({key:'initialized',value:true})])
-            })
-            snapshot={id:activeId,transactions:seed,accounts:[{name:'HDFC Savings',type:'Savings account',balance:64250},{name:'Cash',type:'Cash',balance:8500},{name:'SBI Current',type:'Current account',balance:11500}],budgets,goals:[{name:'Emergency fund',current:18000,target:50000,date:'Mar 2027'},{name:'New laptop',current:24000,target:65000,date:'Jun 2027'}],recurring:[],dismissedNoticeIds:[],updatedAt:new Date().toISOString()}
-            setShowDemo(true)
-          } else {
-            snapshot={id:activeId,transactions:savedTransactions,accounts:savedAccounts,budgets:savedBudgets,goals:savedGoals,recurring:savedRecurring,dismissedNoticeIds:[],updatedAt:new Date().toISOString()}
-          }
-          await db.workspaceSnapshots.put(snapshot)
-        }
+        const remote = await pullRemoteDB()
         if (!active) return
-        setWorkspaces(profiles);setActiveWorkspaceId(activeId);setTransactions(snapshot.transactions);setAccounts(snapshot.accounts);setBudgetItems(snapshot.budgets);setGoals(snapshot.goals);setRecurring(snapshot.recurring||[]);setDismissedNoticeIds(snapshot.dismissedNoticeIds||[])
-        if (snapshot.transactions.length+snapshot.accounts.length+snapshot.budgets.length+snapshot.goals.length>0 && snapshot.id!==profiles[0].id) setShowDemo(false)
-        await db.meta.put({key:'activeWorkspaceId',value:activeId})
+
+        if (remote && Array.isArray(remote.transactions)) {
+          // Hydrate state from remote D1
+          const defaultProfiles: Workspace[] = [{ id: 'personal', name: 'Personal', kind: 'personal', createdAt: new Date().toISOString() }]
+          const profiles: Workspace[] = (remote.workspaces && remote.workspaces.length > 0)
+            ? remote.workspaces
+            : defaultProfiles
+          const activeId = remote.activeWorkspaceId && profiles.some(w => w.id === remote.activeWorkspaceId)
+            ? remote.activeWorkspaceId
+            : profiles[0].id
+
+          setWorkspaces(profiles)
+          setActiveWorkspaceId(activeId)
+          setTransactions(remote.transactions || [])
+          setAccounts(remote.accounts || [])
+          setBudgetItems(remote.budgets || [])
+          setGoals(remote.goals || [])
+          setRecurring(remote.recurring || [])
+          setDismissedNoticeIds(remote.dismissedNoticeIds || [])
+          if (remote.transactions.length > 0 || remote.accounts.length > 0) setShowDemo(false)
+          await applySnapshotToDexie(remote)
+        } else {
+          // Remote vault is empty or initial; read local Dexie records
+          let profiles = await db.workspaces.toArray()
+          if (!profiles.length) {
+            profiles = [{ id: 'personal', name: 'Personal', kind: 'personal', createdAt: new Date().toISOString() }]
+            await db.workspaces.bulkPut(profiles)
+          }
+          const storedActive = await db.meta.get('activeWorkspaceId')
+          const activeId = typeof storedActive?.value === 'string' && profiles.some(w => w.id === storedActive.value)
+            ? storedActive.value
+            : (profiles.find(w => w.kind === 'personal')?.id || profiles[0].id)
+          let snapshot = await db.workspaceSnapshots.get(activeId)
+          if (!snapshot) {
+            const [savedTransactions, savedAccounts, savedBudgets, savedGoals, initialized, savedRecurring] = await Promise.all([
+              db.transactions.toArray(), db.accounts.toArray(), db.budgets.toArray(), db.goals.toArray(), db.meta.get('initialized'), db.recurring.toArray()
+            ])
+            const hasSavedData = savedTransactions.length + savedAccounts.length + savedBudgets.length + savedGoals.length + savedRecurring.length > 0
+            if (!hasSavedData && !initialized && activeId === profiles[0].id) {
+              await db.transaction('rw', db.transactions, db.accounts, db.budgets, db.goals, db.meta, async () => {
+                await Promise.all([
+                  db.transactions.bulkPut(seed),
+                  db.accounts.bulkPut([{ name: 'HDFC Savings', type: 'Savings account', balance: 64250 }, { name: 'Cash', type: 'Cash', balance: 8500 }, { name: 'SBI Current', type: 'Current account', balance: 11500 }]),
+                  db.budgets.bulkPut(budgets),
+                  db.goals.bulkPut([{ name: 'Emergency fund', current: 18000, target: 50000, date: 'Mar 2027' }, { name: 'New laptop', current: 24000, target: 65000, date: 'Jun 2027' }]),
+                  db.meta.put({ key: 'initialized', value: true })
+                ])
+              })
+              snapshot = { id: activeId, transactions: seed, accounts: [{ name: 'HDFC Savings', type: 'Savings account', balance: 64250 }, { name: 'Cash', type: 'Cash', balance: 8500 }, { name: 'SBI Current', type: 'Current account', balance: 11500 }], budgets, goals: [{ name: 'Emergency fund', current: 18000, target: 50000, date: 'Mar 2027' }, { name: 'New laptop', current: 24000, target: 65000, date: 'Jun 2027' }], recurring: [], dismissedNoticeIds: [], updatedAt: new Date().toISOString() }
+              setShowDemo(true)
+            } else {
+              snapshot = { id: activeId, transactions: savedTransactions, accounts: savedAccounts, budgets: savedBudgets, goals: savedGoals, recurring: savedRecurring, dismissedNoticeIds: [], updatedAt: new Date().toISOString() }
+            }
+            await db.workspaceSnapshots.put(snapshot)
+          }
+          if (!active) return
+          setWorkspaces(profiles)
+          setActiveWorkspaceId(activeId)
+          setTransactions(snapshot.transactions)
+          setAccounts(snapshot.accounts)
+          setBudgetItems(snapshot.budgets)
+          setGoals(snapshot.goals)
+          setRecurring(snapshot.recurring || [])
+          setDismissedNoticeIds(snapshot.dismissedNoticeIds || [])
+          if (snapshot.transactions.length + snapshot.accounts.length + snapshot.budgets.length + snapshot.goals.length > 0 && snapshot.id !== profiles[0].id) setShowDemo(false)
+          await db.meta.put({ key: 'activeWorkspaceId', value: activeId })
+
+          // Push local state to D1 so cloud vault is populated
+          saveDB({
+            workspaces: profiles,
+            activeWorkspaceId: activeId,
+            transactions: snapshot.transactions,
+            accounts: snapshot.accounts,
+            budgets: snapshot.budgets,
+            goals: snapshot.goals,
+            recurring: snapshot.recurring || [],
+            dismissedNoticeIds: snapshot.dismissedNoticeIds || [],
+            updatedAt: new Date().toISOString()
+          })
+        }
       } catch {
-        if(active)setNotice('Local database could not be opened. Check browser storage permissions.')
-      } finally { if(active)setHydrated(true) }
+        if (active) setNotice('Local database could not be opened. Check browser storage permissions.')
+      } finally {
+        if (active) setHydrated(true)
+      }
     }
-    void load();return()=>{active=false}
-  }, [])
+
+    void loadData()
+    return () => { active = false }
+  }, [token])
+
+  // Pull latest D1 state on document visibility change (e.g. switching back to tab/app)
+  useEffect(() => {
+    if (!token) return
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void pullRemoteDB().then(remote => {
+          if (remote && Array.isArray(remote.transactions)) {
+            if (remote.workspaces && remote.workspaces.length > 0) setWorkspaces(remote.workspaces)
+            if (remote.activeWorkspaceId) setActiveWorkspaceId(remote.activeWorkspaceId)
+            setTransactions(remote.transactions)
+            setAccounts(remote.accounts || [])
+            setBudgetItems(remote.budgets || [])
+            setGoals(remote.goals || [])
+            setRecurring(remote.recurring || [])
+            setDismissedNoticeIds(remote.dismissedNoticeIds || [])
+            void applySnapshotToDexie(remote)
+          }
+        })
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
+  }, [token])
+
+  // Save to Dexie + localStorage cache and debounce PUT /api/sync (800ms)
+  useEffect(() => {
+    if (!hydrated || !token) return
+    const snapshot: WorkspaceSnapshot = {
+      id: activeWorkspaceId,
+      transactions,
+      accounts,
+      budgets: budgetItems,
+      goals,
+      recurring,
+      dismissedNoticeIds,
+      updatedAt: new Date().toISOString()
+    }
+
+    void db.transaction('rw', [db.transactions, db.accounts, db.budgets, db.goals, db.recurring, db.workspaceSnapshots, db.meta], async () => {
+      await Promise.all([
+        db.transactions.clear().then(() => db.transactions.bulkPut(transactions)),
+        db.accounts.clear().then(() => db.accounts.bulkPut(accounts)),
+        db.budgets.clear().then(() => db.budgets.bulkPut(budgetItems)),
+        db.goals.clear().then(() => db.goals.bulkPut(goals)),
+        db.recurring.clear().then(() => db.recurring.bulkPut(recurring)),
+        db.workspaceSnapshots.put(snapshot),
+        db.meta.put({ key: 'activeWorkspaceId', value: activeWorkspaceId })
+      ])
+    }).catch(() => setNotice('Could not save changes to this browser. Export a backup before closing the page.'))
+
+    // Save to localStorage instant cache + debounced D1 cloud sync (800ms)
+    saveDB({
+      workspaces,
+      activeWorkspaceId,
+      transactions,
+      accounts,
+      budgets: budgetItems,
+      goals,
+      recurring,
+      dismissedNoticeIds,
+      updatedAt: new Date().toISOString()
+    })
+  }, [transactions, accounts, budgetItems, goals, recurring, dismissedNoticeIds, activeWorkspaceId, workspaces, hydrated, token])
 
   useEffect(() => {
-    if (!hydrated) return
-    const snapshot={id:activeWorkspaceId,transactions,accounts,budgets:budgetItems,goals,recurring,dismissedNoticeIds,updatedAt:new Date().toISOString()}
-    void db.transaction('rw',[db.transactions,db.accounts,db.budgets,db.goals,db.recurring,db.workspaceSnapshots,db.meta],async()=>{
-      await Promise.all([db.transactions.clear().then(()=>db.transactions.bulkPut(transactions)),db.accounts.clear().then(()=>db.accounts.bulkPut(accounts)),db.budgets.clear().then(()=>db.budgets.bulkPut(budgetItems)),db.goals.clear().then(()=>db.goals.bulkPut(goals)),db.recurring.clear().then(()=>db.recurring.bulkPut(recurring)),db.workspaceSnapshots.put(snapshot),db.meta.put({key:'activeWorkspaceId',value:activeWorkspaceId})])
-    }).catch(()=>setNotice('Could not save changes to this browser. Export a backup before closing the page.'))
-  },[transactions,accounts,budgetItems,goals,recurring,dismissedNoticeIds,activeWorkspaceId,hydrated])
+    if (hydrated) void db.workspaces.clear().then(() => db.workspaces.bulkPut(workspaces))
+  }, [workspaces, hydrated])
 
-  useEffect(()=>{if(hydrated)void db.workspaces.clear().then(()=>db.workspaces.bulkPut(workspaces))},[workspaces,hydrated])
+  const handleLogout = () => {
+    if (confirm('Sign out of your Mefin Cloud vault?')) {
+      logout()
+      setToken(null)
+      setCurrentUser(null)
+      setHydrated(false)
+      setNotice('Signed out successfully.')
+    }
+  }
+
+  const handleManualSync = async () => {
+    setNotice('Syncing with Cloudflare D1…')
+    try {
+      const remote = await pullRemoteDB()
+      if (remote && Array.isArray(remote.transactions)) {
+        if (remote.workspaces && remote.workspaces.length > 0) setWorkspaces(remote.workspaces)
+        if (remote.activeWorkspaceId) setActiveWorkspaceId(remote.activeWorkspaceId)
+        setTransactions(remote.transactions)
+        setAccounts(remote.accounts || [])
+        setBudgetItems(remote.budgets || [])
+        setGoals(remote.goals || [])
+        setRecurring(remote.recurring || [])
+        setDismissedNoticeIds(remote.dismissedNoticeIds || [])
+        await applySnapshotToDexie(remote)
+        setNotice('Synced with Cloudflare D1.')
+      } else {
+        saveDB({
+          workspaces,
+          activeWorkspaceId,
+          transactions,
+          accounts,
+          budgets: budgetItems,
+          goals,
+          recurring,
+          dismissedNoticeIds,
+          updatedAt: new Date().toISOString()
+        })
+        setNotice('Cloud vault updated.')
+      }
+    } catch {
+      setNotice('Could not complete sync. Check network connection.')
+    }
+  }
 
   const clearPreviewData = () => {
     if (!confirm('Clear all preview records? This will leave Mefin empty so you can start with your own data.')) return
@@ -298,162 +664,299 @@ export default function App() {
     reader.readAsText(file)
   }
 
-  return <div className="app-root">
-    <div className="ambient ambient-a"/><div className="ambient ambient-b"/>
-    <div className="landscape landscape-a"/><div className="landscape landscape-b"/>
+  // Gate the entire app behind the Apple-styled authentication screen when token is absent
+  if (!token) {
+    return (
+      <AuthScreen
+        onAuthenticated={(user) => {
+          setCurrentUser(user)
+          setToken(getAuthToken())
+          setHydrated(false)
+          setNotice(`Welcome, ${user.email}!`)
+        }}
+      />
+    )
+  }
 
-    {/* Desktop Sidebar (strictly hidden on <=768px) */}
-    <aside className={`sidebar ${mobileOpen?'sidebar-open':''}`}>
-      <div className="sidebar-top"><Brand/><button className="icon-btn mobile-close" onClick={()=>setMobileOpen(false)} aria-label="Close navigation"><X size={18}/></button></div>
-      <button className="workspace-select" onClick={()=>setWorkspaceMenu(v=>!v)}><span className="workspace-avatar">{(workspaces.find(w=>w.id===activeWorkspaceId)?.name||'P').slice(0,1).toUpperCase()}</span><span className="workspace-text"><b>{workspaces.find(w=>w.id===activeWorkspaceId)?.name||'Personal'}</b><small>{workspaces.find(w=>w.id===activeWorkspaceId)?.kind==='workspace'?'Workspace':'Personal profile'}</small></span><ChevronDown size={15}/></button>{workspaceMenu&&<div className="workspace-menu">{workspaces.map(w=><button key={w.id} className={w.id===activeWorkspaceId?'selected':''} onClick={()=>void switchWorkspace(w.id)}><span>{w.name}</span><small>{w.kind==='personal'?'Personal':'Workspace'}</small></button>)}<button className="workspace-manage" onClick={()=>{setWorkspaceMenu(false);go('Profile & Workspace')}}>Manage profiles and workspaces</button></div>}
-      <div className="nav-caption">WORKSPACE</div>
-      <nav className="nav-list">{nav.map(({label,icon:Icon})=><button key={label} className={`nav-link ${page===label?'active':''}`} onClick={()=>go(label)}><Icon size={17}/><span>{label}</span>{label==='Transactions'&&<small>{transactions.length}</small>}</button>)}</nav>
-      <div className="nav-caption preferences-caption">MANAGE</div><nav className="nav-list">{[{label:'Notifications' as Page,icon:Bell},{label:'Profile & Workspace' as Page,icon:Landmark}].map(({label,icon:Icon})=><button key={label} className={`nav-link ${page===label?'active':''}`} onClick={()=>go(label)}><Icon size={17}/><span>{label}</span>{label==='Notifications'&&notices.length>0&&<small>{notices.length}</small>}</button>)}</nav>
-      <div className="nav-caption preferences-caption">PREFERENCES & SUPPORT</div><nav className="nav-list">{[{label:'Privacy & Control' as Page,icon:ShieldCheck},{label:'Help Center' as Page,icon:CircleHelp},{label:'Settings' as Page,icon:Settings}].map(({label,icon:Icon})=><button key={label} className={`nav-link ${page===label?'active':''}`} onClick={()=>go(label)}><Icon size={17}/><span>{label}</span></button>)}</nav>
-      <div className="sidebar-fill"/>
-      <div className="privacy-card"><div className="privacy-icon"><LockKeyhole size={16}/></div><b>Your money. Your device.</b><p>Your financial data is saved in this browser with IndexedDB.</p><span><i/> Local-first by design</span></div>
-      <button className="user-row" onClick={()=>go('Profile & Workspace')}><div className="user-avatar">{(workspaces.find(w=>w.id===activeWorkspaceId)?.name||'P').slice(0,1).toUpperCase()}</div><div><b>{workspaces.find(w=>w.id===activeWorkspaceId)?.name||'Personal'}</b><small>Local profile</small></div><Ellipsis size={18}/></button>
-    </aside>
+  return (
+    <div className="app-root">
+      <div className="ambient ambient-a"/><div className="ambient ambient-b"/>
+      <div className="landscape landscape-a"/><div className="landscape landscape-b"/>
 
-    {mobileOpen&&<button className="scrim" onClick={()=>setMobileOpen(false)} aria-label="Close navigation"/>}
-
-    {/* Main scroll container */}
-    <main className="main">
-      {/* Desktop Topbar (strictly hidden on <=768px) */}
-      <header className="topbar">
-        <div className="top-left"><button className="icon-btn mobile-menu" onClick={()=>setMobileOpen(true)} aria-label="Open navigation"><Menu size={19}/></button><div className="crumb"><span>Workspace</span><ChevronRight size={13}/><b>{page}</b></div></div>
-        <div className="top-actions"><label className="search"><Search size={15}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search transactions..."/><kbd>⌘ K</kbd></label><button className="icon-btn" aria-label="Notifications" onClick={()=>go('Notifications')}><Bell size={17}/>{notices.length>0&&<i/>}</button><button className="top-user" onClick={()=>go('Profile & Workspace')} aria-label="Open profile">{(workspaces.find(w=>w.id===activeWorkspaceId)?.name||'P').slice(0,1).toUpperCase()}</button></div>
-      </header>
-
-      <div className="content">
-        {notice&&<div className="notice"><span>{notice}</span><button onClick={()=>setNotice('')}><X size={15}/></button></div>}
-        {page==='Overview'&&<Overview totals={totals} transactions={transactions} budgets={budgetItems} goals={goals} range={range} setRange={setRange} openAdd={()=>openAdd()} go={go} demo={showDemo} setDemo={setShowDemo} clearPreviewData={clearPreviewData} loadDemoData={loadDemoData}/>}
-        {page==='Transactions'&&<TransactionsPage transactions={filtered} query={query} setQuery={setQuery} filter={filter} setFilter={setFilter} openAdd={()=>openAdd()} edit={openAdd} remove={deleteTx} exportCSV={exportCSV}/>}
-        {page==='Accounts'&&<AccountsPage accounts={accounts.map(account=>({...account,balance:account.balance+transactions.filter(t=>t.account===account.name).reduce((net,t)=>net+(t.type==='income'?t.amount:-t.amount),0)}))} setAccounts={setAccounts}/>}
-        {page==='Budgets'&&<BudgetsPage items={budgetItems} setItems={setBudgetItems} transactions={transactions}/>}
-        {page==='Savings Goals'&&<GoalsPage goals={goals} setGoals={setGoals}/>}
-        {page==='Settings'&&<SettingsPage exportJSON={exportJSON} importJSON={importJSON} exportCSV={exportCSV} clearAllData={clearAllData}/>}
-        {page==='Net Worth'&&<NetWorthPage accounts={accounts.map(account=>({...account,balance:account.balance+transactions.filter(t=>t.account===account.name).reduce((net,t)=>net+(t.type==='income'?t.amount:-t.amount),0)}))}/>}
-        {page==='Recurring'&&<RecurringPage items={recurring} setItems={setRecurring} accounts={accounts.map(a=>a.name)} onRecord={recordRecurring}/>}
-        {page==='Calendar'&&<CalendarPage transactions={transactions} recurring={recurring}/>}
-        {page==='Insights'&&<InsightsPage transactions={transactions} budgets={budgetItems} goals={goals}/>}
-        {page==='Notifications'&&<NotificationsPage items={notices} dismiss={id=>setDismissedNoticeIds(old=>[...old,id])}/>}
-        {page==='Reports'&&<ReportsPage transactions={transactions} accounts={accounts.map(account=>({...account,balance:account.balance+transactions.filter(t=>t.account===account.name).reduce((net,t)=>net+(t.type==='income'?t.amount:-t.amount),0)}))} budgets={budgetItems} goals={goals} exportCSV={exportCSV}/>}
-        {page==='Privacy & Control'&&<PrivacyPage exportJSON={exportJSON} importJSON={importJSON} clearAll={clearActiveWorkspace} deleteWorkspace={deleteActiveWorkspace} eraseAll={eraseAllLocalData}/>}
-        {page==='Help Center'&&<HelpPage/>}
-        {page==='Profile & Workspace'&&<ProfileWorkspacePage workspaces={workspaces} activeId={activeWorkspaceId} onSwitch={switchWorkspace} onCreate={createWorkspace} onRename={renameWorkspace}/>}
-        <footer className="footer"><div><Brand small/><span>Money, made more meaningful.</span></div><span>Designed for clarity <i>·</i> Built around you</span></footer>
-      </div>
-    </main>
-
-    {/* Fixed Glassmorphic Bottom Tab Bar on mobile (<=768px) */}
-    <nav className="mobile-tab-bar" aria-label="Bottom Navigation">
-      {[
-        { label: 'Overview' as Page, icon: LayoutDashboard },
-        { label: 'Transactions' as Page, icon: ArrowLeftRight, badge: transactions.length },
-        { label: 'Accounts' as Page, icon: Wallet },
-        { label: 'Budgets' as Page, icon: ChartPie },
-        { label: 'More' as const, icon: Ellipsis, badge: notices.length > 0 ? notices.length : undefined }
-      ].map(({ label, icon: Icon, badge }) => {
-        const isMoreActive = label === 'More' && !['Overview','Transactions','Accounts','Budgets'].includes(page)
-        const isActive = page === label || isMoreActive
-        return (
-          <button
-            key={label}
-            className={`mobile-tab-item ${isActive ? 'active' : ''}`}
-            onClick={() => label === 'More' ? setMoreSheetOpen(v => !v) : go(label)}
-            aria-label={label}
-          >
-            <span className="mobile-tab-icon-wrap">
-              <Icon size={20} strokeWidth={isActive ? 2.4 : 1.8} />
-              {badge !== undefined && badge > 0 && <span className="mobile-tab-badge">{badge}</span>}
-            </span>
-            <span className="mobile-tab-label">{label}</span>
+      {/* Desktop Sidebar (strictly hidden on <=768px) */}
+      <aside className={`sidebar ${mobileOpen?'sidebar-open':''}`}>
+        <div className="sidebar-top">
+          <Brand/>
+          <button className="icon-btn mobile-close" onClick={()=>setMobileOpen(false)} aria-label="Close navigation">
+            <X size={18}/>
           </button>
-        )
-      })}
-    </nav>
+        </div>
 
-    {/* Mobile Slide-Up Bottom Sheet for More Navigation */}
-    {moreSheetOpen && (
-      <div className="sheet-scrim" onMouseDown={e => { if (e.target === e.currentTarget) setMoreSheetOpen(false) }}>
-        <div className="bottom-sheet glass-card" role="dialog" aria-modal="true" aria-label="More navigation">
-          <div className="sheet-drag-pill" />
-          <div className="sheet-header">
-            <div>
-              <span className="eyebrow">NAVIGATION</span>
-              <h2 className="sheet-title">More features</h2>
-            </div>
-            <button className="icon-btn" onClick={() => setMoreSheetOpen(false)} aria-label="Close">
-              <X size={18} />
+        <button className="workspace-select" onClick={()=>setWorkspaceMenu(v=>!v)}>
+          <span className="workspace-avatar">{(workspaces.find(w=>w.id===activeWorkspaceId)?.name||'P').slice(0,1).toUpperCase()}</span>
+          <span className="workspace-text">
+            <b>{workspaces.find(w=>w.id===activeWorkspaceId)?.name||'Personal'}</b>
+            <small>{workspaces.find(w=>w.id===activeWorkspaceId)?.kind==='workspace'?'Workspace':'Personal profile'}</small>
+          </span>
+          <ChevronDown size={15}/>
+        </button>
+
+        {workspaceMenu && (
+          <div className="workspace-menu">
+            {workspaces.map(w=>(
+              <button key={w.id} className={w.id===activeWorkspaceId?'selected':''} onClick={()=>void switchWorkspace(w.id)}>
+                <span>{w.name}</span>
+                <small>{w.kind==='personal'?'Personal':'Workspace'}</small>
+              </button>
+            ))}
+            <button className="workspace-manage" onClick={()=>{setWorkspaceMenu(false);go('Profile & Workspace')}}>
+              Manage profiles and workspaces
             </button>
           </div>
-          <div className="sheet-body">
-            <div className="mobile-workspace-card">
-              <div className="workspace-avatar">{(workspaces.find(w=>w.id===activeWorkspaceId)?.name||'P').slice(0,1).toUpperCase()}</div>
-              <div className="mobile-workspace-info">
-                <b>{workspaces.find(w=>w.id===activeWorkspaceId)?.name||'Personal'}</b>
-                <small>{workspaces.find(w=>w.id===activeWorkspaceId)?.kind==='workspace'?'Workspace':'Personal profile'}</small>
-              </div>
-              <button className="button button-light button-small" onClick={() => { setMoreSheetOpen(false); go('Profile & Workspace') }}>
-                Switch
+        )}
+
+        <div className="nav-caption">WORKSPACE</div>
+        <nav className="nav-list">
+          {nav.map(({label,icon:Icon})=>(
+            <button key={label} className={`nav-link ${page===label?'active':''}`} onClick={()=>go(label)}>
+              <Icon size={17}/>
+              <span>{label}</span>
+              {label==='Transactions'&&<small>{transactions.length}</small>}
+            </button>
+          ))}
+        </nav>
+
+        <div className="nav-caption preferences-caption">MANAGE</div>
+        <nav className="nav-list">
+          {[
+            {label:'Notifications' as Page,icon:Bell},
+            {label:'Profile & Workspace' as Page,icon:Landmark}
+          ].map(({label,icon:Icon})=>(
+            <button key={label} className={`nav-link ${page===label?'active':''}`} onClick={()=>go(label)}>
+              <Icon size={17}/>
+              <span>{label}</span>
+              {label==='Notifications'&&notices.length>0&&<small>{notices.length}</small>}
+            </button>
+          ))}
+        </nav>
+
+        <div className="nav-caption preferences-caption">PREFERENCES & SUPPORT</div>
+        <nav className="nav-list">
+          {[
+            {label:'Privacy & Control' as Page,icon:ShieldCheck},
+            {label:'Help Center' as Page,icon:CircleHelp},
+            {label:'Settings' as Page,icon:Settings}
+          ].map(({label,icon:Icon})=>(
+            <button key={label} className={`nav-link ${page===label?'active':''}`} onClick={()=>go(label)}>
+              <Icon size={17}/>
+              <span>{label}</span>
+            </button>
+          ))}
+        </nav>
+
+        <div className="sidebar-fill"/>
+        <div className="privacy-card">
+          <div className="privacy-icon"><LockKeyhole size={16}/></div>
+          <b>Your money. Your vault.</b>
+          <p>Authenticated with Web Crypto PBKDF2 and synced to Cloudflare D1.</p>
+          <span><i/> Cloud-synced vault</span>
+        </div>
+
+        <div className="user-row" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+          <button style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: 1, textAlign: 'left', minWidth: 0 }} onClick={()=>go('Profile & Workspace')}>
+            <div className="user-avatar">{(workspaces.find(w=>w.id===activeWorkspaceId)?.name||currentUser?.email||'P').slice(0,1).toUpperCase()}</div>
+            <div style={{ overflow: 'hidden' }}>
+              <b>{workspaces.find(w=>w.id===activeWorkspaceId)?.name||'Personal'}</b>
+              <small style={{ display: 'block', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>{currentUser?.email || 'Cloud vault'}</small>
+            </div>
+          </button>
+          <button className="logout-icon-btn" onClick={handleLogout} title="Sign out" aria-label="Sign out">
+            <LogOut size={16}/>
+          </button>
+        </div>
+      </aside>
+
+      {mobileOpen && <button className="scrim" onClick={()=>setMobileOpen(false)} aria-label="Close navigation"/>}
+
+      {/* Main scroll container */}
+      <main className="main">
+        {/* Desktop Topbar (strictly hidden on <=768px) */}
+        <header className="topbar">
+          <div className="top-left">
+            <button className="icon-btn mobile-menu" onClick={()=>setMobileOpen(true)} aria-label="Open navigation">
+              <Menu size={19}/>
+            </button>
+            <div className="crumb">
+              <span>Workspace</span>
+              <ChevronRight size={13}/>
+              <b>{page}</b>
+            </div>
+          </div>
+
+          <div className="top-actions">
+            <SyncIndicator syncInfo={syncInfo} onManualSync={handleManualSync} />
+            <label className="search">
+              <Search size={15}/>
+              <input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search transactions..."/>
+              <kbd>⌘ K</kbd>
+            </label>
+            <button className="icon-btn" aria-label="Notifications" onClick={()=>go('Notifications')}>
+              <Bell size={17}/>
+              {notices.length>0&&<i/>}
+            </button>
+            <div className="top-user-group">
+              <button className="top-user" onClick={()=>go('Profile & Workspace')} aria-label="Open profile" title={currentUser?.email}>
+                {(workspaces.find(w=>w.id===activeWorkspaceId)?.name||currentUser?.email||'P').slice(0,1).toUpperCase()}
+              </button>
+              <button className="logout-icon-btn" onClick={handleLogout} title={`Sign out (${currentUser?.email || 'Mefin'})`} aria-label="Sign out">
+                <LogOut size={16}/>
               </button>
             </div>
+          </div>
+        </header>
 
-            <div className="sheet-section-title">FINANCIAL PLANNING</div>
-            <div className="sheet-nav-grid">
-              {[
-                { label: 'Savings Goals' as Page, icon: Target },
-                { label: 'Net Worth' as Page, icon: Landmark },
-                { label: 'Recurring' as Page, icon: CalendarDays },
-                { label: 'Calendar' as Page, icon: CalendarDays },
-                { label: 'Insights' as Page, icon: Sparkles },
-                { label: 'Reports' as Page, icon: FileSpreadsheet },
-              ].map(({ label, icon: Icon }) => (
-                <button
-                  key={label}
-                  className={`sheet-nav-item ${page === label ? 'active' : ''}`}
-                  onClick={() => go(label)}
-                >
-                  <Icon size={18} />
-                  <span>{label}</span>
-                </button>
-              ))}
+        <div className="content">
+          {notice && <div className="notice"><span>{notice}</span><button onClick={()=>setNotice('')}><X size={15}/></button></div>}
+          {page==='Overview'&&<Overview totals={totals} transactions={transactions} budgets={budgetItems} goals={goals} range={range} setRange={setRange} openAdd={()=>openAdd()} go={go} demo={showDemo} setDemo={setShowDemo} clearPreviewData={clearPreviewData} loadDemoData={loadDemoData}/>}
+          {page==='Transactions'&&<TransactionsPage transactions={filtered} query={query} setQuery={setQuery} filter={filter} setFilter={setFilter} openAdd={()=>openAdd()} edit={openAdd} remove={deleteTx} exportCSV={exportCSV}/>}
+          {page==='Accounts'&&<AccountsPage accounts={accounts.map(account=>({...account,balance:account.balance+transactions.filter(t=>t.account===account.name).reduce((net,t)=>net+(t.type==='income'?t.amount:-t.amount),0)}))} setAccounts={setAccounts}/>}
+          {page==='Budgets'&&<BudgetsPage items={budgetItems} setItems={setBudgetItems} transactions={transactions}/>}
+          {page==='Savings Goals'&&<GoalsPage goals={goals} setGoals={setGoals}/>}
+          {page==='Settings'&&<SettingsPage exportJSON={exportJSON} importJSON={importJSON} exportCSV={exportCSV} clearAllData={clearAllData} currentUser={currentUser} syncInfo={syncInfo} onManualSync={handleManualSync} onLogout={handleLogout}/>}
+          {page==='Net Worth'&&<NetWorthPage accounts={accounts.map(account=>({...account,balance:account.balance+transactions.filter(t=>t.account===account.name).reduce((net,t)=>net+(t.type==='income'?t.amount:-t.amount),0)}))}/>}
+          {page==='Recurring'&&<RecurringPage items={recurring} setItems={setRecurring} accounts={accounts.map(a=>a.name)} onRecord={recordRecurring}/>}
+          {page==='Calendar'&&<CalendarPage transactions={transactions} recurring={recurring}/>}
+          {page==='Insights'&&<InsightsPage transactions={transactions} budgets={budgetItems} goals={goals}/>}
+          {page==='Notifications'&&<NotificationsPage items={notices} dismiss={id=>setDismissedNoticeIds(old=>[...old,id])}/>}
+          {page==='Reports'&&<ReportsPage transactions={transactions} accounts={accounts.map(account=>({...account,balance:account.balance+transactions.filter(t=>t.account===account.name).reduce((net,t)=>net+(t.type==='income'?t.amount:-t.amount),0)}))} budgets={budgetItems} goals={goals} exportCSV={exportCSV}/>}
+          {page==='Privacy & Control'&&<PrivacyPage exportJSON={exportJSON} importJSON={importJSON} clearAll={clearActiveWorkspace} deleteWorkspace={deleteActiveWorkspace} eraseAll={eraseAllLocalData}/>}
+          {page==='Help Center'&&<HelpPage/>}
+          {page==='Profile & Workspace'&&<ProfileWorkspacePage workspaces={workspaces} activeId={activeWorkspaceId} onSwitch={switchWorkspace} onCreate={createWorkspace} onRename={renameWorkspace}/>}
+          <footer className="footer"><div><Brand small/><span>Money, made more meaningful.</span></div><span>Designed for clarity <i>·</i> Cloud-synced with D1</span></footer>
+        </div>
+      </main>
+
+      {/* Fixed Glassmorphic Bottom Tab Bar on mobile (<=768px) */}
+      <nav className="mobile-tab-bar" aria-label="Bottom Navigation">
+        {[
+          { label: 'Overview' as Page, icon: LayoutDashboard },
+          { label: 'Transactions' as Page, icon: ArrowLeftRight, badge: transactions.length },
+          { label: 'Accounts' as Page, icon: Wallet },
+          { label: 'Budgets' as Page, icon: ChartPie },
+          { label: 'More' as const, icon: Ellipsis, badge: notices.length > 0 ? notices.length : undefined }
+        ].map(({ label, icon: Icon, badge }) => {
+          const isMoreActive = label === 'More' && !['Overview','Transactions','Accounts','Budgets'].includes(page)
+          const isActive = page === label || isMoreActive
+          return (
+            <button
+              key={label}
+              className={`mobile-tab-item ${isActive ? 'active' : ''}`}
+              onClick={() => label === 'More' ? setMoreSheetOpen(v => !v) : go(label)}
+              aria-label={label}
+            >
+              <span className="mobile-tab-icon-wrap">
+                <Icon size={20} strokeWidth={isActive ? 2.4 : 1.8} />
+                {badge !== undefined && badge > 0 && <span className="mobile-tab-badge">{badge}</span>}
+              </span>
+              <span className="mobile-tab-label">{label}</span>
+            </button>
+          )
+        })}
+      </nav>
+
+      {/* Mobile Slide-Up Bottom Sheet for More Navigation */}
+      {moreSheetOpen && (
+        <div className="sheet-scrim" onMouseDown={e => { if (e.target === e.currentTarget) setMoreSheetOpen(false) }}>
+          <div className="bottom-sheet glass-card" role="dialog" aria-modal="true" aria-label="More navigation">
+            <div className="sheet-drag-pill" />
+            <div className="sheet-header">
+              <div>
+                <span className="eyebrow">NAVIGATION</span>
+                <h2 className="sheet-title">More features</h2>
+              </div>
+              <button className="icon-btn" onClick={() => setMoreSheetOpen(false)} aria-label="Close">
+                <X size={18} />
+              </button>
             </div>
+            <div className="sheet-body">
+              <div className="mobile-workspace-card">
+                <div className="workspace-avatar">{(workspaces.find(w=>w.id===activeWorkspaceId)?.name||'P').slice(0,1).toUpperCase()}</div>
+                <div className="mobile-workspace-info">
+                  <b>{workspaces.find(w=>w.id===activeWorkspaceId)?.name||'Personal'}</b>
+                  <small>{currentUser?.email || (workspaces.find(w=>w.id===activeWorkspaceId)?.kind==='workspace'?'Workspace':'Personal profile')}</small>
+                </div>
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  <button className="button button-light button-small" onClick={() => { setMoreSheetOpen(false); go('Profile & Workspace') }}>
+                    Switch
+                  </button>
+                  <button className="button button-light button-small" onClick={handleLogout} title="Sign out">
+                    <LogOut size={14} />
+                  </button>
+                </div>
+              </div>
 
-            <div className="sheet-section-title">PREFERENCES & CONTROLS</div>
-            <div className="sheet-nav-list">
-              {[
-                { label: 'Notifications' as Page, icon: Bell, badge: notices.length },
-                { label: 'Profile & Workspace' as Page, icon: Landmark },
-                { label: 'Privacy & Control' as Page, icon: ShieldCheck },
-                { label: 'Help Center' as Page, icon: CircleHelp },
-                { label: 'Settings' as Page, icon: Settings },
-              ].map(({ label, icon: Icon, badge }) => (
-                <button
-                  key={label}
-                  className={`sheet-list-item ${page === label ? 'active' : ''}`}
-                  onClick={() => go(label)}
-                >
-                  <div className="sheet-list-item-left">
-                    <Icon size={17} />
-                    <span>{label}</span>
-                  </div>
-                  <div className="sheet-list-item-right">
-                    {badge !== undefined && badge > 0 && <span className="sheet-chip">{badge}</span>}
-                    <ChevronRight size={15} />
-                  </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '8px 4px 14px' }}>
+                <SyncIndicator syncInfo={syncInfo} onManualSync={handleManualSync} />
+                <button className="button button-light button-small" onClick={handleLogout}>
+                  <LogOut size={13} /> Sign out
                 </button>
-              ))}
+              </div>
+
+              <div className="sheet-section-title">FINANCIAL PLANNING</div>
+              <div className="sheet-nav-grid">
+                {[
+                  { label: 'Savings Goals' as Page, icon: Target },
+                  { label: 'Net Worth' as Page, icon: Landmark },
+                  { label: 'Recurring' as Page, icon: CalendarDays },
+                  { label: 'Calendar' as Page, icon: CalendarDays },
+                  { label: 'Insights' as Page, icon: Sparkles },
+                  { label: 'Reports' as Page, icon: FileSpreadsheet },
+                ].map(({ label, icon: Icon }) => (
+                  <button
+                    key={label}
+                    className={`sheet-nav-item ${page === label ? 'active' : ''}`}
+                    onClick={() => go(label)}
+                  >
+                    <Icon size={18} />
+                    <span>{label}</span>
+                  </button>
+                ))}
+              </div>
+
+              <div className="sheet-section-title">PREFERENCES & CONTROLS</div>
+              <div className="sheet-nav-list">
+                {[
+                  { label: 'Notifications' as Page, icon: Bell, badge: notices.length },
+                  { label: 'Profile & Workspace' as Page, icon: Landmark },
+                  { label: 'Privacy & Control' as Page, icon: ShieldCheck },
+                  { label: 'Help Center' as Page, icon: CircleHelp },
+                  { label: 'Settings' as Page, icon: Settings },
+                ].map(({ label, icon: Icon, badge }) => (
+                  <button
+                    key={label}
+                    className={`sheet-list-item ${page === label ? 'active' : ''}`}
+                    onClick={() => go(label)}
+                  >
+                    <div className="sheet-list-item-left">
+                      <Icon size={17} />
+                      <span>{label}</span>
+                    </div>
+                    <div className="sheet-list-item-right">
+                      {badge !== undefined && badge > 0 && <span className="sheet-chip">{badge}</span>}
+                      <ChevronRight size={15} />
+                    </div>
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
         </div>
-      </div>
-    )}
+      )}
 
-    {/* Transaction Modal (slide-up bottom sheet on <=768px) */}
-    {modal && <TransactionModal form={form} setForm={setForm} close={()=>setModal(false)} save={saveTx} editing={!!editing} accounts={accounts.map(a=>a.name)}/>}
-  </div>
+      {/* Transaction Modal (slide-up bottom sheet on <=768px) */}
+      {modal && <TransactionModal form={form} setForm={setForm} close={()=>setModal(false)} save={saveTx} editing={!!editing} accounts={accounts.map(a=>a.name)}/>}
+    </div>
+  )
 }
 
 function PageHeading({eyebrow,title,subtitle,action}:{eyebrow:string;title:React.ReactNode;subtitle:string;action?:React.ReactNode}) {
@@ -681,8 +1184,98 @@ function GoalsPage({goals,setGoals}:{goals:{name:string;current:number;target:nu
     {goals.length===0?<GlassCard><EmptyState icon={Target} title="No savings goals yet" text="Create a goal and track your progress as you contribute." action={<button className="button button-dark" onClick={()=>setAdding(true)}><Plus size={14}/> Create a goal</button>}/></GlassCard>:<div className="goal-grid">{goals.map((g,i)=><GlassCard className="goal-card" key={g.name}><div className="goal-card-head"><div className={`goal-symbol goal-${i%3}`}><Target size={20}/></div><button className="icon-quiet" onClick={()=>{if(confirm(`Delete the ${g.name} goal?`))setGoals(old=>old.filter(x=>x.name!==g.name))}} aria-label="Delete goal"><Trash2 size={15}/></button></div><span>SAVINGS GOAL</span><h3>{g.name}</h3><b className="goal-amount">{money(g.current)} <small>of {money(g.target)}</small></b><div className="progress large"><i style={{width:`${Math.min(100,g.current/g.target*100)}%`}}/></div><div className="goal-foot"><span>{Math.round(g.current/g.target*100)}% completed</span><span>{g.date}</span></div>{g.current>=g.target?<div className="goal-complete">Goal reached</div>:contributing===g.name?<div className="contribution-form"><input aria-label="Contribution amount" value={contribution} onChange={e=>setContribution(e.target.value)} type="number" min="0.01" step="0.01" placeholder="Amount in ₹"/><button className="button button-dark" onClick={()=>addContribution(g.name)}>Add</button><button className="button button-light" onClick={()=>{setContributing(null);setContribution('')}}>Cancel</button></div>:<button className="button button-light contribution" onClick={()=>setContributing(g.name)}>Add contribution</button>}</GlassCard>)}</div>}
     {adding&&<div className="inline-form glass-card"><h3>Create savings goal</h3><input value={name} onChange={e=>setName(e.target.value)} placeholder="Goal name"/><input value={target} onChange={e=>setTarget(e.target.value)} type="number" min="1" placeholder="Target amount (₹)"/><input value={deadline} onChange={e=>setDeadline(e.target.value)} type="month" aria-label="Target month (optional)"/><button className="button button-dark" onClick={add}>Create goal</button><button className="button button-light" onClick={()=>setAdding(false)}>Cancel</button></div>}</>
 }
-function SettingsPage({exportJSON,importJSON,exportCSV,clearAllData}:{exportJSON:()=>void;importJSON:(f?:File)=>void;exportCSV:()=>void;clearAllData:()=>void}) {
-  return <><PageHeading eyebrow="YOUR SPACE, YOUR RULES" title={<>A little more <em>your way.</em></>} subtitle="Manage your data and application preferences."/><div className="settings-grid"><GlassCard className="settings-card"><div className="settings-icon"><ShieldCheck size={20}/></div><h3>Privacy & local data</h3><p>Mefin is designed as a local-first application. Your financial records stay in this browser on this device. Browser storage is not encrypted by Mefin, so protect your device and keep backups.</p><span className="local-status"><i/> Local-first workspace</span></GlassCard><GlassCard className="settings-card"><div className="settings-icon"><CloudDownload size={20}/></div><h3>Backup & restore</h3><p>Download a JSON backup of this profile’s accounts, transactions, budgets, goals, recurring schedules and reminder preferences. Import a previous Mefin JSON backup to restore it.</p><div className="settings-actions"><button className="button button-dark" onClick={exportJSON}><Download size={14}/> Export backup</button><label className="button button-light upload-button"><Upload size={14}/> Import backup<input type="file" accept="application/json" onChange={e=>importJSON(e.target.files?.[0])}/></label></div></GlassCard><GlassCard className="settings-card"><div className="settings-icon"><FileSpreadsheet size={20}/></div><h3>Transaction export</h3><p>Export your transaction list as a CSV file for spreadsheets and personal analysis.</p><button className="button button-light" onClick={exportCSV}><Download size={14}/> Export transactions</button></GlassCard><GlassCard className="settings-card"><div className="settings-icon"><CircleDollarSign size={20}/></div><h3>Currency</h3><p>Default currency for this MVP.</p><div className="currency-pill">₹ <b>Indian Rupee (INR)</b><Check size={15}/></div></GlassCard></div><GlassCard className="settings-card data-danger"><div className="settings-icon"><Trash2 size={20}/></div><h3>Clear local workspace</h3><p>Remove transactions, accounts, budgets, savings goals and recurring schedules from the active profile only. Other profiles remain unchanged.</p><button className="button button-light" onClick={clearAllData}>Clear active profile</button></GlassCard><div className="settings-footnote"><LockKeyhole size={15}/> No bank connections. No Mefin cloud database. No account sign-in.</div></>
+function SettingsPage({
+  exportJSON,
+  importJSON,
+  exportCSV,
+  clearAllData,
+  currentUser,
+  syncInfo,
+  onManualSync,
+  onLogout
+}:{
+  exportJSON:()=>void;
+  importJSON:(f?:File)=>void;
+  exportCSV:()=>void;
+  clearAllData:()=>void;
+  currentUser: { id: string; email: string } | null;
+  syncInfo: SyncInfo;
+  onManualSync: () => void;
+  onLogout: () => void;
+}) {
+  return <>
+    <PageHeading eyebrow="YOUR SPACE, YOUR RULES" title={<>A little more <em>your way.</em></>} subtitle="Manage your data and application preferences."/>
+    <div className="settings-grid">
+      <GlassCard className="settings-card">
+        <div className="settings-icon"><Cloud size={20}/></div>
+        <h3>Cloudflare D1 Cloud Sync</h3>
+        <p>Your financial records are secured with Web Crypto PBKDF2 hashing and synced to your private Cloudflare D1 cloud vault.</p>
+        <div className="settings-cloud-row">
+          <div>
+            <b>{currentUser?.email || 'Authenticated User'}</b>
+            <div style={{ color: 'var(--muted)', fontSize: '12px', marginTop: '2px' }}>
+              {syncInfo.lastSyncedAt
+                ? `Last synced at ${new Date(syncInfo.lastSyncedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                : 'Ready to sync'}
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <button className="button button-light button-small" onClick={onManualSync}>
+              <RefreshCw size={13} className={syncInfo.status === 'syncing' ? 'spin-icon' : ''} /> Sync now
+            </button>
+            <button className="button button-light button-small" onClick={onLogout}>
+              <LogOut size={13} /> Sign out
+            </button>
+          </div>
+        </div>
+      </GlassCard>
+
+      <GlassCard className="settings-card">
+        <div className="settings-icon"><ShieldCheck size={20}/></div>
+        <h3>Privacy & local storage cache</h3>
+        <p>Mefin maintains an instant local cache in your browser so pages load with zero latency, then transparently synchronizes snapshot diffs with Cloudflare D1.</p>
+        <span className="local-status"><i/> Local cache + D1 cloud sync</span>
+      </GlassCard>
+
+      <GlassCard className="settings-card">
+        <div className="settings-icon"><CloudDownload size={20}/></div>
+        <h3>Backup & restore</h3>
+        <p>Download a JSON backup of this profile’s accounts, transactions, budgets, goals, recurring schedules and reminder preferences. Import a previous Mefin JSON backup to restore it.</p>
+        <div className="settings-actions">
+          <button className="button button-dark" onClick={exportJSON}><Download size={14}/> Export backup</button>
+          <label className="button button-light upload-button">
+            <Upload size={14}/> Import backup
+            <input type="file" accept="application/json" onChange={e=>importJSON(e.target.files?.[0])}/>
+          </label>
+        </div>
+      </GlassCard>
+
+      <GlassCard className="settings-card">
+        <div className="settings-icon"><FileSpreadsheet size={20}/></div>
+        <h3>Transaction export</h3>
+        <p>Export your transaction list as a CSV file for spreadsheets and personal analysis.</p>
+        <button className="button button-light" onClick={exportCSV}><Download size={14}/> Export transactions</button>
+      </GlassCard>
+
+      <GlassCard className="settings-card">
+        <div className="settings-icon"><CircleDollarSign size={20}/></div>
+        <h3>Currency</h3>
+        <p>Default currency for this MVP.</p>
+        <div className="currency-pill">₹ <b>Indian Rupee (INR)</b><Check size={15}/></div>
+      </GlassCard>
+    </div>
+
+    <GlassCard className="settings-card data-danger">
+      <div className="settings-icon"><Trash2 size={20}/></div>
+      <h3>Clear local workspace</h3>
+      <p>Remove transactions, accounts, budgets, savings goals and recurring schedules from the active profile only. Other profiles remain unchanged.</p>
+      <button className="button button-light" onClick={clearAllData}>Clear active profile</button>
+    </GlassCard>
+
+    <div className="settings-footnote">
+      <ShieldCheck size={15}/> Protected with Web Crypto PBKDF2 & HMAC-SHA256 bearer authentication. Synced to your Cloudflare D1 vault.
+    </div>
+  </>
 }
 function TransactionModal({form,setForm,close,save,editing,accounts}:{form:{title:string;amount:string;category:string;account:string;date:string;type:'income'|'expense'};setForm:React.Dispatch<React.SetStateAction<typeof form>>;close:()=>void;save:()=>void;editing:boolean;accounts:string[]}) {
   return <div className="modal-scrim" onMouseDown={e=>{if(e.target===e.currentTarget)close()}}>
@@ -728,7 +1321,7 @@ function TransactionModal({form,setForm,close,save,editing,accounts}:{form:{titl
       </div>
       <label className="field-label">Date</label>
       <input className="field" type="date" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))}/>
-      <div className="modal-privacy"><ShieldCheck size={15}/> Your entries are intended to remain on this device.</div>
+      <div className="modal-privacy"><ShieldCheck size={15}/> Your entries are securely synchronized to your private Cloudflare D1 vault.</div>
       <div className="modal-actions">
         <button className="button button-light" onClick={close}>Cancel</button>
         <button className="button button-dark" onClick={save}>{editing?'Save changes':'Add transaction'} <ChevronRight size={15}/></button>
