@@ -1,0 +1,5 @@
+# Local secrets for Wrangler Pages Dev (do not commit .dev.vars)
+GEMINI_API_KEY="your-gemini-api-key-here"
+# Optional overrides:
+# JWT_SECRET="mefin-cloud-jwt-secret-key-default-2025"
+# RESEND_API_KEY=""

@@ -23,6 +23,7 @@ import {
 } from './db'
 import type { Tx } from './types'
 import { NetWorthPage, RecurringPage, CalendarPage, InsightsPage, NotificationsPage, ReportsPage, PrivacyPage, HelpPage, ProfileWorkspacePage, type NoticeItem } from './ExtendedPages'
+import { FinanceChat } from './components/FinanceChat'
 import {
   LayoutDashboard, ArrowLeftRight, Wallet, ChartPie, Target, Settings, Search,
   Bell, Plus, ChevronDown, ChevronRight, Menu, X, ShieldCheck, ArrowUpRight,
@@ -456,6 +457,7 @@ export default function App() {
   const [budgetItems, setBudgetItems] = useState<StoredBudget[]>(budgets)
   const [goals, setGoals] = useState<StoredGoal[]>([{ name: 'Emergency fund', current: 18000, target: 50000, date: 'Mar 2027' }, { name: 'New laptop', current: 24000, target: 65000, date: 'Jun 2027' }])
   const [showDemo, setShowDemo] = useState(true)
+  const [chatOpen, setChatOpen] = useState(false)
 
   // Subscribe to live sync status updates
   useEffect(() => {
@@ -958,6 +960,10 @@ export default function App() {
 
           <div className="top-actions">
             <SyncIndicator syncInfo={syncInfo} onManualSync={handleManualSync} />
+            <button className="top-ai-btn" onClick={()=>setChatOpen(true)} title="Ask Mefin AI" aria-label="Ask Mefin AI">
+              <Sparkles size={14}/>
+              <span>Ask AI</span>
+            </button>
             <label className="search">
               <Search size={15}/>
               <input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search transactions..."/>
@@ -1065,6 +1071,29 @@ export default function App() {
                 </button>
               </div>
 
+              <div style={{ margin: '0 4px 14px' }}>
+                <button
+                  className="ai-starter-chip"
+                  style={{
+                    width: '100%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                    background: '#3D4127',
+                    color: '#ffffff',
+                    padding: '10px 14px',
+                    borderRadius: '14px',
+                    fontWeight: 600,
+                    cursor: 'pointer'
+                  }}
+                  onClick={() => { setMoreSheetOpen(false); setChatOpen(true) }}
+                >
+                  <Sparkles size={16} color="#D4DE95" />
+                  <span>Ask Mefin AI</span>
+                </button>
+              </div>
+
               <div className="sheet-section-title">FINANCIAL PLANNING</div>
               <div className="sheet-nav-grid">
                 {[
@@ -1118,6 +1147,29 @@ export default function App() {
 
       {/* Transaction Modal (slide-up bottom sheet on <=768px) */}
       {modal && <TransactionModal form={form} setForm={setForm} close={()=>setModal(false)} save={saveTx} editing={!!editing} accounts={accounts.map(a=>a.name)}/>}
+
+      {/* Floating Mefin AI Assistant Button */}
+      {!chatOpen && (
+        <button
+          className="floating-ai-trigger"
+          onClick={() => setChatOpen(true)}
+          aria-label="Open Mefin AI Assistant"
+          title="Open Mefin AI Assistant"
+        >
+          <Sparkles size={16} />
+          <span>Ask AI</span>
+        </button>
+      )}
+
+      {/* Mefin AI Chatbot Drawer & Modal */}
+      <FinanceChat
+        isOpen={chatOpen}
+        onClose={() => setChatOpen(false)}
+        transactions={transactions}
+        accounts={accounts}
+        budgets={budgetItems}
+        goals={goals}
+      />
     </div>
   )
 }
